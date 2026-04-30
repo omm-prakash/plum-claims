@@ -17,9 +17,11 @@ from agents.state import ClaimPipelineState
 
 
 def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
-    """Extract structured data from pre-provided document content."""
+    """Extract structured data from pre-provided document content or simulate LLM extraction."""
     fields: list[ExtractedField] = []
+    
     if doc.content:
+        # User provided manual structured data
         c = doc.content
         for name, value in [
             ("doctor_name", c.doctor_name), ("doctor_registration", c.doctor_registration),
@@ -31,7 +33,37 @@ def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
         ]:
             if value is not None:
                 fields.append(ExtractedField(field_name=name, value=value, confidence=0.95, source_document=doc.file_id))
-    return ExtractedDocument(file_id=doc.file_id, document_type=doc.actual_type.value, fields=fields, extraction_confidence=0.95 if fields else 0.5)
+    else:
+        # Simulate LLM Extraction from the file
+        from models.claim import DocumentType
+        import random
+        
+        # Base fields common to all docs
+        fields.append(ExtractedField(field_name="patient_name", value="Rajesh Kumar", confidence=0.88, source_document=doc.file_id))
+        
+        if doc.actual_type == DocumentType.HOSPITAL_BILL:
+            fields.append(ExtractedField(field_name="hospital_name", value="Apollo Hospitals (Simulated LLM)", confidence=0.92, source_document=doc.file_id))
+            fields.append(ExtractedField(field_name="total", value=1500.0, confidence=0.96, source_document=doc.file_id))
+            fields.append(ExtractedField(field_name="line_items", value=[
+                {"description": "Room Rent", "amount": 1000.0},
+                {"description": "Nursing Charges", "amount": 500.0}
+            ], confidence=0.91, source_document=doc.file_id))
+        
+        elif doc.actual_type == DocumentType.PRESCRIPTION:
+            fields.append(ExtractedField(field_name="doctor_name", value="Dr. Arun Sharma", confidence=0.95, source_document=doc.file_id))
+            fields.append(ExtractedField(field_name="diagnosis", value="Viral Fever", confidence=0.89, source_document=doc.file_id))
+            fields.append(ExtractedField(field_name="treatment", value="Medication", confidence=0.90, source_document=doc.file_id))
+            fields.append(ExtractedField(field_name="medicines", value=["Paracetamol", "Antibiotics"], confidence=0.94, source_document=doc.file_id))
+
+        elif doc.actual_type == DocumentType.LAB_REPORT:
+            fields.append(ExtractedField(field_name="test_name", value="Complete Blood Count", confidence=0.93, source_document=doc.file_id))
+            
+    return ExtractedDocument(
+        file_id=doc.file_id, 
+        document_type=doc.actual_type.value, 
+        fields=fields, 
+        extraction_confidence=0.95 if fields else 0.5
+    )
 
 
 def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:

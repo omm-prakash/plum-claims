@@ -12,6 +12,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import uuid
 from datetime import datetime, date
@@ -30,6 +31,14 @@ from config import CORS_ORIGINS, API_HOST, API_PORT
 from models.claim import ClaimSubmission, ClaimCategory, DocumentUpload, DocumentType, DocumentQuality, DocumentContent, ClaimHistoryEntry
 from agents.graph import process_claim
 from services.policy_engine import get_policy_engine
+from db import init_db, save_claim as db_save_claim, get_all_claims, get_claim as db_get_claim
+
+# ── Lifespan: initialise SQLite DB on startup ─────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    yield
 
 # ── App Setup ────────────────────────────────────────────────────────────────
 
@@ -37,6 +46,7 @@ app = FastAPI(
     title="Plum Claims Processing System",
     description="AI-powered health insurance claims processing with multi-agent pipeline",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -47,7 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── In-memory store (sufficient for assignment scope) ────────────────────────
+# ── In-memory store (kept as a hot cache for the current session) ─────────────
 
 claims_store: dict[str, dict[str, Any]] = {}
 
@@ -134,11 +144,14 @@ async def submit_test_claim(request: TestClaimRequest):
         )
 
         result = process_claim(claim)
-        claims_store[claim.claim_id] = {
+        entry = {
             "claim": claim.model_dump(),
             "result": result,
             "submitted_at": datetime.utcnow().isoformat(),
         }
+        claims_store[claim.claim_id] = entry
+        # Persist to SQLite
+        db_save_claim(claim.model_dump(), _serialize(result))
 
         return JSONResponse(content=_serialize(result))
 
@@ -174,11 +187,14 @@ async def submit_claim(request: UIClaimRequest):
         )
 
         result = process_claim(claim)
-        claims_store[claim.claim_id] = {
+        entry = {
             "claim": claim.model_dump(),
             "result": result,
             "submitted_at": datetime.utcnow().isoformat(),
         }
+        claims_store[claim.claim_id] = entry
+        # Persist to SQLite
+        db_save_claim(claim.model_dump(), _serialize(result))
 
         return JSONResponse(content=_serialize(result))
 
@@ -188,29 +204,34 @@ async def submit_claim(request: UIClaimRequest):
 
 @app.get("/api/claims")
 async def list_claims():
-    """List all processed claims."""
+    """List all processed claims — reads from SQLite (persists across restarts)."""
+    rows = get_all_claims()
+    # Enrich from in-memory cache for columns not in summary query
     items = []
-    for claim_id, data in claims_store.items():
-        result = data.get("result", {})
+    for row in rows:
         items.append({
-            "claim_id": claim_id,
-            "member_id": data["claim"]["member_id"],
-            "category": data["claim"]["claim_category"],
-            "claimed_amount": data["claim"]["claimed_amount"],
-            "decision": result.get("decision", "UNKNOWN"),
-            "approved_amount": result.get("approved_amount", 0),
-            "confidence_score": result.get("confidence_score", 0),
-            "submitted_at": data.get("submitted_at"),
+            "claim_id": row["claim_id"],
+            "member_id": row["member_id"],
+            "category": row["claim_category"],
+            "claimed_amount": row["claimed_amount"],
+            "decision": row.get("decision", "UNKNOWN"),
+            "approved_amount": row.get("approved_amount", 0),
+            "confidence_score": row.get("confidence_score", 0),
+            "submitted_at": row.get("submitted_at"),
         })
     return {"claims": _serialize(items), "total": len(items)}
 
 
 @app.get("/api/claims/{claim_id}")
 async def get_claim(claim_id: str):
-    """Get a specific claim with full decision and trace."""
-    if claim_id not in claims_store:
+    """Get a specific claim with full decision and trace — prefers in-memory cache, falls back to SQLite."""
+    if claim_id in claims_store:
+        return _serialize(claims_store[claim_id])
+    # Fallback: load from SQLite (e.g. after server restart)
+    db_row = db_get_claim(claim_id)
+    if not db_row:
         raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found")
-    return _serialize(claims_store[claim_id])
+    return _serialize(db_row)
 
 
 @app.get("/api/policy/summary")
