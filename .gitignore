@@ -1,0 +1,7 @@
+plum-claims/backend/tests/__pycache__/*
+plum-claims/backend/agents/__pycache__/*
+plum-claims/backend/models/__pycache__/*
+plum-claims/backend/storage/__pycache__/*
+plum-claims/backend/tools/__pycache__/*
+plum-claims/backend/services/__pycache__/*
+plum-claims/backend/__pycache__/*
