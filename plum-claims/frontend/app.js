@@ -112,12 +112,13 @@ function addDocumentEntry() {
     const container = document.getElementById('documents-container');
     const id = ++docCounter;
     const div = document.createElement('div');
-    div.className = 'doc-entry';
     div.id = 'doc-' + id;
+    // Injecting inline styles here to guarantee the layout is a single row without needing external css classes that might be missing
+    div.style.cssText = 'display: flex; gap: 16px; align-items: flex-start; padding: 16px; background: var(--bg-glass); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 12px; animation: fadeIn 0.2s ease;';
     div.innerHTML = `
-        <div class="form-group">
-            <label>Document Type</label>
-            <select id="doc-type-${id}" required>
+        <div class="form-group" style="flex: 1; margin: 0;">
+            <label style="margin-bottom: 6px;">Document Type</label>
+            <select id="doc-type-${id}" required style="width: 100%; height: 42px;">
                 <option value="">Select type...</option>
                 <option value="PRESCRIPTION">Prescription</option>
                 <option value="HOSPITAL_BILL">Hospital Bill</option>
@@ -128,17 +129,51 @@ function addDocumentEntry() {
                 <option value="DENTAL_REPORT">Dental Report</option>
             </select>
         </div>
-        <div class="form-group">
-            <label>Quality</label>
-            <select id="doc-quality-${id}">
-                <option value="GOOD">Good</option>
-                <option value="FAIR">Fair</option>
-                <option value="POOR">Poor</option>
-                <option value="UNREADABLE">Unreadable</option>
-            </select>
+        <div class="form-group" style="flex: 2; margin: 0;">
+            <label style="margin-bottom: 6px;">Upload File (image/PDF)</label>
+            <div class="file-upload-area" id="doc-upload-area-${id}" onclick="document.getElementById('doc-file-${id}').click()" style="display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 12px; padding: 0 16px; height: 42px; border: 1px dashed var(--border); border-radius: var(--radius-sm); cursor: pointer; background: transparent; transition: var(--transition);">
+                <input type="file" id="doc-file-${id}" accept="image/*,.pdf" style="display:none" onchange="handleFileSelect(${id}, this)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.6"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span class="file-upload-text" style="font-size: 0.85rem; color: var(--text-secondary);">Click to upload or drag & drop</span>
+            </div>
+            <div class="file-selected" id="doc-file-info-${id}" style="display: none; align-items: center; justify-content: space-between; padding: 0 16px; height: 42px; background: var(--blue-bg); border: 1px solid rgba(59,130,246,0.2); border-radius: var(--radius-sm);">
+                <span class="file-name" id="doc-file-name-${id}" style="font-size: 0.85rem; color: var(--blue); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;"></span>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="clearFile(${id})" style="padding: 4px 8px; font-size: 0.75rem;">✕ Remove</button>
+            </div>
         </div>
-        <button type="button" class="remove-doc-btn" onclick="document.getElementById('doc-${id}').remove()">✕</button>`;
+        <button type="button" class="remove-doc-btn" onclick="document.getElementById('doc-${id}').remove()" title="Remove Document" style="margin-top: 24px; padding: 0; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid rgba(239,68,68,0.3); color: var(--red); border-radius: 6px; cursor: pointer; transition: var(--transition);">✕</button>
+    `;
     container.appendChild(div);
+}
+
+function handleFileSelect(docId, input) {
+    const file = input.files[0];
+    if (!file) return;
+    const area = document.getElementById('doc-upload-area-' + docId);
+    const info = document.getElementById('doc-file-info-' + docId);
+    const name = document.getElementById('doc-file-name-' + docId);
+    area.style.display = 'none';
+    info.style.display = 'flex';
+    name.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+}
+
+function clearFile(docId) {
+    const input = document.getElementById('doc-file-' + docId);
+    input.value = '';
+    document.getElementById('doc-upload-area-' + docId).style.display = 'flex';
+    document.getElementById('doc-file-info-' + docId).style.display = 'none';
+}
+
+function addLineItem(docId) {
+    const container = document.getElementById('doc-lineitems-' + docId);
+    const idx = container.children.length + 1;
+    const row = document.createElement('div');
+    row.className = 'line-item-row';
+    row.innerHTML = `
+        <input type="text" placeholder="Description (e.g. Consultation Fee)" class="li-desc">
+        <input type="number" placeholder="Amount (₹)" class="li-amount">
+        <button type="button" class="remove-doc-btn" onclick="this.parentElement.remove()" style="height:34px;width:34px;font-size:0.7rem">✕</button>`;
+    container.appendChild(row);
 }
 
 // ── Submit Claim ────────────────────────────────────────────────────────────
@@ -151,11 +186,22 @@ async function submitClaim() {
 
     try {
         const docs = [];
-        document.querySelectorAll('.doc-entry').forEach(entry => {
+        document.querySelectorAll('.doc-entry-card').forEach(entry => {
             const id = entry.id.split('-')[1];
             const type = document.getElementById('doc-type-' + id)?.value;
-            const quality = document.getElementById('doc-quality-' + id)?.value;
-            if (type) docs.push({ actual_type: type, quality: quality || 'GOOD', file_id: 'F' + Math.random().toString(36).substr(2, 6).toUpperCase() });
+            const fileInput = document.getElementById('doc-file-' + id);
+            const fileName = fileInput?.files?.[0]?.name || null;
+
+            if (!type) return;
+
+            const doc = {
+                actual_type: type,
+                quality: 'GOOD', // Defaulting to GOOD since quality selector is removed
+                file_id: 'F' + Math.random().toString(36).substr(2, 6).toUpperCase(),
+            };
+            if (fileName) doc.file_name = fileName;
+
+            docs.push(doc);
         });
 
         const payload = {
