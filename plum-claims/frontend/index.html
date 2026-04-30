@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Plum Health Insurance Claims Processing System — AI-powered multi-agent claims adjudication with full observability">
+    <title>Plum Claims — AI Claims Processing</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- ── Sidebar Navigation ──────────────────────────────────────────── -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                </svg>
+            </div>
+            <span class="brand-text">Plum Claims</span>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-label">OVERVIEW</div>
+            <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                Dashboard
+            </a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-label">CLAIMS</div>
+            <a href="#" class="nav-item" data-page="submit" id="nav-submit">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                Submit Claim
+            </a>
+            <a href="#" class="nav-item" data-page="claims" id="nav-claims">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                All Claims
+            </a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-label">TOOLS</div>
+            <a href="#" class="nav-item" data-page="eval" id="nav-eval">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                Run Test Cases
+            </a>
+            <a href="#" class="nav-item" data-page="policy" id="nav-policy">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Policy Info
+            </a>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="status-indicator">
+                <span class="status-dot" id="api-status-dot"></span>
+                <span id="api-status-text">Checking API...</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- ── Main Content ────────────────────────────────────────────────── -->
+    <main class="main-content" id="main-content">
+
+        <!-- Dashboard Page -->
+        <div class="page active" id="page-dashboard">
+            <div class="page-header">
+                <h1>Dashboard</h1>
+                <p class="page-subtitle">Claims processing overview</p>
+            </div>
+
+            <div class="stats-grid" id="dashboard-stats">
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-blue">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-value" id="stat-total">0</div>
+                        <div class="stat-label">Total Claims</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-green">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-value" id="stat-approved">0</div>
+                        <div class="stat-label">Approved</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-red">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-value" id="stat-rejected">0</div>
+                        <div class="stat-label">Rejected</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon stat-icon-amber">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    </div>
+                    <div class="stat-info">
+                        <div class="stat-value" id="stat-review">0</div>
+                        <div class="stat-label">Manual Review</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" id="recent-claims-card">
+                <div class="card-header">
+                    <h2>Recent Claims</h2>
+                    <button class="btn btn-ghost btn-sm" onclick="navigateTo('claims')">View All →</button>
+                </div>
+                <div id="recent-claims-body">
+                    <div class="empty-state">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <p>No claims processed yet</p>
+                        <button class="btn btn-primary btn-sm" onclick="navigateTo('submit')">Submit First Claim</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit Claim Page -->
+        <div class="page" id="page-submit">
+            <div class="page-header">
+                <h1>Submit Claim</h1>
+                <p class="page-subtitle">Process a new health insurance claim</p>
+            </div>
+
+            <form class="claim-form" id="claim-form" onsubmit="return false;">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="member_id">Member</label>
+                        <select id="member_id" required>
+                            <option value="">Select member...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="claim_category">Claim Category</label>
+                        <select id="claim_category" required>
+                            <option value="">Select category...</option>
+                            <option value="CONSULTATION">Consultation</option>
+                            <option value="DIAGNOSTIC">Diagnostic</option>
+                            <option value="PHARMACY">Pharmacy</option>
+                            <option value="DENTAL">Dental</option>
+                            <option value="VISION">Vision</option>
+                            <option value="ALTERNATIVE_MEDICINE">Alternative Medicine</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="treatment_date">Treatment Date</label>
+                        <input type="date" id="treatment_date" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="claimed_amount">Claimed Amount (₹)</label>
+                        <input type="number" id="claimed_amount" min="1" step="0.01" placeholder="e.g. 1500" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="hospital_name">Hospital / Clinic Name</label>
+                        <input type="text" id="hospital_name" placeholder="e.g. Apollo Hospitals">
+                    </div>
+                </div>
+
+                <!-- Documents Section -->
+                <div class="documents-section">
+                    <div class="section-header">
+                        <h3>Documents</h3>
+                        <span class="doc-requirements" id="doc-requirements"></span>
+                    </div>
+                    <div id="documents-container"></div>
+                    <button type="button" class="btn btn-outline btn-sm" id="add-document-btn" onclick="addDocumentEntry()">
+                        + Add Document
+                    </button>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" id="submit-claim-btn" onclick="submitClaim()">
+                        <span class="btn-text">Process Claim</span>
+                        <span class="btn-loader" style="display:none;">
+                            <svg width="18" height="18" viewBox="0 0 24 24" class="spinner"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-linecap="round"/></svg>
+                            Processing...
+                        </span>
+                    </button>
+                </div>
+            </form>
+
+            <!-- Result Panel -->
+            <div class="result-panel" id="submit-result" style="display:none;"></div>
+        </div>
+
+        <!-- All Claims Page -->
+        <div class="page" id="page-claims">
+            <div class="page-header">
+                <h1>All Claims</h1>
+                <p class="page-subtitle">View all processed claims and their decisions</p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h2>Claims History</h2>
+                    <button class="btn btn-ghost btn-sm" onclick="loadClaims()">↻ Refresh</button>
+                </div>
+                <div id="claims-table-body">
+                    <div class="empty-state"><p>No claims processed yet</p></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Eval Page -->
+        <div class="page" id="page-eval">
+            <div class="page-header">
+                <h1>Test Case Evaluation</h1>
+                <p class="page-subtitle">Run all 12 test cases from test_cases.json and see the results</p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h2>Test Suite</h2>
+                    <button class="btn btn-primary btn-sm" id="run-eval-btn" onclick="runEvaluation()">
+                        <span class="btn-text">▶ Run All Tests</span>
+                        <span class="btn-loader" style="display:none;">Running...</span>
+                    </button>
+                </div>
+                <div id="eval-results">
+                    <div class="empty-state">
+                        <p>Click "Run All Tests" to execute the 12 test cases</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Policy Info Page -->
+        <div class="page" id="page-policy">
+            <div class="page-header">
+                <h1>Policy Information</h1>
+                <p class="page-subtitle">Coverage rules, members, and network hospitals</p>
+            </div>
+            <div id="policy-content">
+                <div class="empty-state"><p>Loading policy...</p></div>
+            </div>
+        </div>
+
+        <!-- Claim Detail Modal -->
+        <div class="modal-overlay" id="claim-detail-modal" style="display:none;">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2 id="modal-title">Claim Detail</h2>
+                    <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
+                </div>
+                <div class="modal-body" id="modal-body"></div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
