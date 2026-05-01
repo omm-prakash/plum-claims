@@ -41,6 +41,11 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
     # ── Check 1: Required document types ─────────────────────────────────
     doc_reqs = engine.get_document_requirements(claim.claim_category.value)
     if doc_reqs:
+        valid_types = set(doc_reqs.required + doc_reqs.optional)
+        # Drop documents that are neither required nor optional
+        documents = [d for d in documents if d.actual_type.value in valid_types]
+        state["documents"] = [d.model_dump() for d in documents]
+
         uploaded_types = [d.actual_type.value for d in documents]
         required_types = doc_reqs.required
 
@@ -79,6 +84,29 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
             except ValueError:
                 doc.quality = DocumentQuality.POOR # fallback
             doc.patient_name_on_doc = analysis.patient_name
+
+            # Check for document type mismatch from LLM
+            if analysis.detected_type != "UNKNOWN" and analysis.detected_type != doc.actual_type.value:
+                result.passed = False
+                doc_type_display = doc.actual_type.value.replace("_", " ").title()
+                detected_display = analysis.detected_type.replace("_", " ").title()
+                
+                result.wrong_documents.append({
+                    "expected": doc.actual_type.value,
+                    "uploaded_instead": [analysis.detected_type],
+                    "message": (
+                        f"Document type mismatch: You selected {doc_type_display} "
+                        f"but our system detected a {detected_display}. "
+                        f"Please select the correct document type and resubmit."
+                    )
+                })
+                check = {
+                    "check": f"Document Type Match: {doc.file_id}",
+                    "status": "FAIL - Mismatch"
+                }
+                checks.append(check)
+                continue # skip quality check if type doesn't match
+            print(analysis.detected_type )
 
         check = {
             "check": f"Document quality: {doc.file_id} ({doc.actual_type.value})",

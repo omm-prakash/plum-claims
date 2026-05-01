@@ -102,10 +102,10 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
     line_items = None
     hospital_name = state.get("hospital_name")
     for ext_doc in extracted:
-        print(f"\\n--- Extracted Data from {ext_doc.document_type} ({ext_doc.file_id}) ---")
-        for field in ext_doc.fields:
-            print(f"  {field.field_name}: {field.value}")
-        print("---------------------------------------------------")
+        # print(f"\\n--- Extracted Data from {ext_doc.document_type} ({ext_doc.file_id}) ---")
+        # for field in ext_doc.fields:
+        #     print(f"  {field.field_name}: {field.value}")
+        # print("---------------------------------------------------")
         for field in ext_doc.fields:
             if field.field_name == "diagnosis" and not diagnosis: diagnosis = field.value
             if field.field_name == "treatment" and not treatment: treatment = field.value
@@ -134,7 +134,7 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
         warnings.append("Critical information missing: Diagnosis could not be extracted from the prescription.")
         trace_step.status = TraceStepStatus.FAILED
         trace_step.message = "Extraction failed: Diagnosis missing."
-    print('extractor complete!!----------------------------------------')
+    # print('extractor complete!!----------------------------------------')
     return {
         "extracted_data": [e.model_dump() for e in extracted],
         "diagnosis": diagnosis, "treatment": treatment,

@@ -58,7 +58,8 @@ def amount_calculation_agent(state: ClaimPipelineState) -> dict[str, Any]:
         approved_total = 0
         for item in line_items:
             desc = item.get("description", "")
-            amount = float(item.get("amount", 0))
+            raw_amount = item.get("amount")
+            amount = float(raw_amount) if raw_amount is not None else 0.0
             is_excluded = any(exc.lower() in desc.lower() or desc.lower() in exc.lower() for exc in excluded_items_list)
 
             # Also check dental/vision exclusions from policy

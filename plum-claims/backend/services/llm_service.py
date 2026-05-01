@@ -34,6 +34,7 @@ def get_text_llm():
 class DocumentAnalysisResult(BaseModel):
     quality: str = Field(description="The quality of the document: GOOD, FAIR, POOR, or UNREADABLE")
     patient_name: str | None = Field(description="The patient name extracted from the document, or null if not found")
+    detected_type: str = Field(description="The exact document type detected, must be one of: PRESCRIPTION, HOSPITAL_BILL, LAB_REPORT, DIAGNOSTIC_REPORT, PHARMACY_BILL, DENTAL_REPORT, DISCHARGE_SUMMARY, or UNKNOWN")
 
 def encode_file_to_base64(file_path: str) -> str:
     """Read a file and convert it to a base64 encoded string.
@@ -64,20 +65,20 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     """Analyze a document for quality and extract the patient name using a Vision LLM."""
     if not os.environ.get("GROQ_API_KEY"):
         print("Warning: GROQ_API_KEY not set. Simulating LLM response.")
-        return DocumentAnalysisResult(quality="GOOD", patient_name="Rajesh Kumar")
+        return DocumentAnalysisResult(quality="GOOD", patient_name="Rajesh Kumar", detected_type="UNKNOWN")
 
     try:
         base64_image = encode_file_to_base64(file_path)
     except Exception as e:
         print(f"Error encoding file: {e}")
-        return DocumentAnalysisResult(quality="UNREADABLE", patient_name=None)
+        return DocumentAnalysisResult(quality="UNREADABLE", patient_name=None, detected_type="UNKNOWN")
 
     llm = get_vision_llm()
     parser = JsonOutputParser(pydantic_object=DocumentAnalysisResult)
 
-    prompt_text = """
-    You are an expert document verification assistant for a health insurance claims processing system.
-    Please analyze the provided document image and output a JSON object with two fields: 'quality' and 'patient_name'.
+    prompt_text = f"""
+    You are an expert document analysis assistant for a health insurance claims system.
+    Please analyze the provided document image and output a JSON object with three fields: 'quality', 'patient_name', and 'detected_type'.
 
     1. **Document Quality Evaluation:**
     Carefully assess the legibility and overall quality of the document based on the following criteria:
@@ -96,6 +97,17 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     - Be careful not to confuse the patient's name with the Doctor's name, the Hospital's name, or the person who signed the document.
     - Extract ONLY the full name of the patient as it appears on the document.
     - If you cannot find a patient name, output null.
+
+    3. **Document Type Classification:**
+    Classify the document into exactly one of the following categories based on its visual contents and layout:
+    - "PRESCRIPTION": Doctor's notes prescribing medication, tests, or treatment.
+    - "HOSPITAL_BILL": An invoice or bill from a hospital or clinic showing charges.
+    - "PHARMACY_BILL": A receipt specifically for purchased medicines.
+    - "LAB_REPORT" or "DIAGNOSTIC_REPORT": Results of blood tests, scans, or pathology.
+    - "DENTAL_REPORT": Notes or reports specific to dental work.
+    - "DISCHARGE_SUMMARY": A detailed summary given when a patient leaves a hospital.
+    - "UNKNOWN": If the document is none of the above or cannot be identified.
+    Output the exact string matching the classification.
 
     Provide ONLY the requested JSON output format.
     {format_instructions}
@@ -122,7 +134,7 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     except Exception as e:
         print(f"Error calling Vision LLM: {e}")
         # Graceful fallback if LLM fails (e.g. rate limit, parsing error)
-        return DocumentAnalysisResult(quality="POOR", patient_name=None)
+        return DocumentAnalysisResult(quality="POOR", patient_name=None, detected_type="UNKNOWN")
 
 class DocumentExtractionResult(BaseModel):
     confidence_score: float = Field(description="A confidence score between 0.0 and 1.0 indicating how certain you are of the extracted values.")
