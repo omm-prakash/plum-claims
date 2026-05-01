@@ -15,3 +15,5 @@ httpx>=0.28.0
 websockets>=15.0.0
 pytest>=8.3.0
 pytest-asyncio>=0.26.0
+langchain-groq
+PyMuPDF

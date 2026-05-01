@@ -69,6 +69,7 @@ class AmountBreakdown(BaseModel):
 class DocVerificationResult(BaseModel):
     """Result from the document verification agent."""
     passed: bool = False
+    needs_manual_review: bool = False
     missing_documents: list[str] = Field(default_factory=list)
     wrong_documents: list[dict[str, Any]] = Field(default_factory=list)
     unreadable_documents: list[dict[str, Any]] = Field(default_factory=list)

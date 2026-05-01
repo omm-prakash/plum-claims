@@ -16,10 +16,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from models.claim import ClaimCategory, ClaimSubmission, DocumentUpload, DocumentType
+from models.claim import ClaimCategory, ClaimSubmission, DocumentUpload, DocumentType, DocumentQuality
 from models.decision import DocVerificationResult, TraceStep, TraceStepStatus
 from services.policy_engine import get_policy_engine
 from agents.state import ClaimPipelineState
+from services.llm_service import analyze_document
 
 
 def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
@@ -70,6 +71,15 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
 
     # ── Check 2: Document quality / readability ──────────────────────────
     for doc in documents:
+        # Use Vision LLM to verify document quality and patient name if a file was uploaded
+        if doc.file_path:
+            analysis = analyze_document(doc.file_path)
+            try:
+                doc.quality = DocumentQuality(analysis.quality)
+            except ValueError:
+                doc.quality = DocumentQuality.POOR # fallback
+            doc.patient_name_on_doc = analysis.patient_name
+
         check = {
             "check": f"Document quality: {doc.file_id} ({doc.actual_type.value})",
             "status": "PASS"

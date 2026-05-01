@@ -86,6 +86,23 @@ async function loadMembers() {
     } catch {}
 }
 
+// ── Hospitals ───────────────────────────────────────────────────────────────
+
+async function loadHospitals() {
+    try {
+        const res = await fetch(API_BASE + '/policy/summary');
+        const data = await res.json();
+        const sel = document.getElementById('hospital_name');
+        sel.innerHTML = '<option value="">Select hospital...</option>';
+        (data.network_hospitals || []).forEach(h => {
+            const opt = document.createElement('option');
+            opt.value = h;
+            opt.textContent = h;
+            sel.appendChild(opt);
+        });
+    } catch {}
+}
+
 // ── Document Requirements ───────────────────────────────────────────────────
 
 document.getElementById('claim_category').addEventListener('change', updateDocRequirements);
@@ -179,6 +196,44 @@ function addLineItem(docId) {
 // ── Submit Claim ────────────────────────────────────────────────────────────
 
 async function submitClaim() {
+    const form = document.getElementById('claim-form');
+    if (form && !form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+
+    const memberId = document.getElementById('member_id').value;
+    const claimCategory = document.getElementById('claim_category').value;
+    const treatmentDate = document.getElementById('treatment_date').value;
+    const claimedAmount = document.getElementById('claimed_amount').value;
+    const hospitalName = document.getElementById('hospital_name').value;
+
+    if (!memberId || !claimCategory || !treatmentDate || !claimedAmount || !hospitalName) {
+        alert("Please provide all details asked in the form.");
+        return;
+    }
+
+    const docEntries = Array.from(document.getElementById('documents-container').children);
+    if (docEntries.length === 0) {
+        alert("Please add at least one document.");
+        return;
+    }
+
+    let fileMissing = false;
+    for (let i = 0; i < docEntries.length; i++) {
+        const id = docEntries[i].id.split('-')[1];
+        const fileInput = document.getElementById('doc-file-' + id);
+        if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+            fileMissing = true;
+            break;
+        }
+    }
+
+    if (fileMissing) {
+        alert("Please upload a file for all document entries.");
+        return;
+    }
+
     const btn = document.getElementById('submit-claim-btn');
     btn.querySelector('.btn-text').style.display = 'none';
     btn.querySelector('.btn-loader').style.display = 'inline-flex';
@@ -186,7 +241,7 @@ async function submitClaim() {
 
     try {
         const docs = [];
-        document.querySelectorAll('.doc-entry-card').forEach(entry => {
+        docEntries.forEach(entry => {
             const id = entry.id.split('-')[1];
             const type = document.getElementById('doc-type-' + id)?.value;
             const fileInput = document.getElementById('doc-file-' + id);
@@ -213,7 +268,22 @@ async function submitClaim() {
             documents: docs,
         };
 
-        const res = await fetch(API_BASE + '/claims/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const formData = new FormData();
+        formData.append('payload', JSON.stringify(payload));
+        
+        // Append actual files
+        docEntries.forEach(entry => {
+            const id = entry.id.split('-')[1];
+            const fileInput = document.getElementById('doc-file-' + id);
+            if (fileInput && fileInput.files && fileInput.files[0]) {
+                formData.append('files', fileInput.files[0]);
+            }
+        });
+
+        const res = await fetch(API_BASE + '/claims/submit', { 
+            method: 'POST', 
+            body: formData 
+        });
         const result = await res.json();
         showResult(result);
         loadDashboard();
@@ -542,5 +612,6 @@ function escapeHtml(str) {
 (async () => {
     await checkHealth();
     await loadMembers();
+    await loadHospitals();
     await loadDashboard();
 })();

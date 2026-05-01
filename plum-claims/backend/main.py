@@ -160,29 +160,55 @@ async def submit_test_claim(request: TestClaimRequest):
 
 
 @app.post("/api/claims/submit")
-async def submit_claim(request: UIClaimRequest):
-    """Submit a claim from the UI."""
+async def submit_claim(
+    payload: str = Form(...),
+    files: list[UploadFile] = File(default=[])
+):
+    """Submit a claim from the UI with actual files."""
     try:
+        data = json.loads(payload)
+        
+        # Ensure uploads directory exists
+        upload_dir = Path(__file__).parent / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save uploaded files to disk and map them by filename
+        saved_files = {}
+        for file in files:
+            if file.filename:
+                # Generate a unique filename to prevent collisions
+                safe_name = f"{uuid.uuid4().hex[:8]}_{file.filename}"
+                file_path = upload_dir / safe_name
+                with open(file_path, "wb") as f:
+                    f.write(await file.read())
+                saved_files[file.filename] = str(file_path)
+
         docs = []
-        for d in request.documents:
+        for d in data.get("documents", []):
             content = None
             if "content" in d and d["content"]:
                 content = DocumentContent(**d["content"])
+                
+            # Find the saved file path if a file was uploaded for this document
+            file_name = d.get("file_name")
+            file_path = saved_files.get(file_name) if file_name else None
+            
             docs.append(DocumentUpload(
                 file_id=d.get("file_id", f"F{uuid.uuid4().hex[:6].upper()}"),
-                file_name=d.get("file_name"),
+                file_name=file_name,
                 actual_type=DocumentType(d["actual_type"]),
                 quality=DocumentQuality(d.get("quality", "GOOD")),
                 patient_name_on_doc=d.get("patient_name_on_doc"),
                 content=content,
+                file_path=file_path,
             ))
 
         claim = ClaimSubmission(
-            member_id=request.member_id,
-            claim_category=ClaimCategory(request.claim_category),
-            treatment_date=request.treatment_date,
-            claimed_amount=request.claimed_amount,
-            hospital_name=request.hospital_name,
+            member_id=data.get("member_id"),
+            claim_category=ClaimCategory(data.get("claim_category")),
+            treatment_date=data.get("treatment_date"),
+            claimed_amount=float(data.get("claimed_amount", 0)),
+            hospital_name=data.get("hospital_name"),
             documents=docs,
         )
 
