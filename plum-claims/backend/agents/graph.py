@@ -31,6 +31,13 @@ def _should_continue_after_verification(state: ClaimPipelineState) -> str:
     return "document_extractor"
 
 
+def _should_continue_after_extraction(state: ClaimPipelineState) -> str:
+    """Route based on document extraction result (e.g. missing diagnosis)."""
+    if state.get("should_stop", False):
+        return "decision_maker"
+    return "policy_validator"
+
+
 def build_claims_pipeline() -> StateGraph:
     """Build and compile the claims processing LangGraph pipeline."""
     workflow = StateGraph(ClaimPipelineState)
@@ -56,8 +63,16 @@ def build_claims_pipeline() -> StateGraph:
         }
     )
 
-    # Linear flow for the rest
-    workflow.add_edge("document_extractor", "policy_validator")
+    # Add conditional edge after extraction
+    workflow.add_conditional_edges(
+        "document_extractor",
+        _should_continue_after_extraction,
+        {
+            "policy_validator": "policy_validator",
+            "decision_maker": "decision_maker",
+        }
+    )
+
     workflow.add_edge("policy_validator", "amount_calculator")
     workflow.add_edge("amount_calculator", "fraud_detector")
     workflow.add_edge("fraud_detector", "decision_maker")

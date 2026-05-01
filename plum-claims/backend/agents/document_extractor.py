@@ -8,7 +8,7 @@ Handles failures gracefully with confidence degradation.
 from __future__ import annotations
 
 import os, json, traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimSubmission, DocumentUpload
@@ -17,7 +17,7 @@ from agents.state import ClaimPipelineState
 
 
 def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
-    """Extract structured data from pre-provided document content or simulate LLM extraction."""
+    """Extract structured data from pre-provided document content or use Vision LLM extraction."""
     fields: list[ExtractedField] = []
     
     if doc.content:
@@ -33,41 +33,46 @@ def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
         ]:
             if value is not None:
                 fields.append(ExtractedField(field_name=name, value=value, confidence=0.95, source_document=doc.file_id))
+        
+        return ExtractedDocument(
+            file_id=doc.file_id, 
+            document_type=doc.actual_type.value, 
+            fields=fields, 
+            extraction_confidence=0.95 if fields else 0.5
+        )
     else:
-        # Simulate LLM Extraction from the file
-        from models.claim import DocumentType
-        import random
+        # Actual LLM Extraction from the file
+        from services.llm_service import extract_document_data
         
-        # Base fields common to all docs
-        fields.append(ExtractedField(field_name="patient_name", value="Rajesh Kumar", confidence=0.88, source_document=doc.file_id))
-        
-        if doc.actual_type == DocumentType.HOSPITAL_BILL:
-            fields.append(ExtractedField(field_name="hospital_name", value="Apollo Hospitals (Simulated LLM)", confidence=0.92, source_document=doc.file_id))
-            fields.append(ExtractedField(field_name="total", value=1500.0, confidence=0.96, source_document=doc.file_id))
-            fields.append(ExtractedField(field_name="line_items", value=[
-                {"description": "Room Rent", "amount": 1000.0},
-                {"description": "Nursing Charges", "amount": 500.0}
-            ], confidence=0.91, source_document=doc.file_id))
-        
-        elif doc.actual_type == DocumentType.PRESCRIPTION:
-            fields.append(ExtractedField(field_name="doctor_name", value="Dr. Arun Sharma", confidence=0.95, source_document=doc.file_id))
-            fields.append(ExtractedField(field_name="diagnosis", value="Viral Fever", confidence=0.89, source_document=doc.file_id))
-            fields.append(ExtractedField(field_name="treatment", value="Medication", confidence=0.90, source_document=doc.file_id))
-            fields.append(ExtractedField(field_name="medicines", value=["Paracetamol", "Antibiotics"], confidence=0.94, source_document=doc.file_id))
+        if not doc.file_path:
+            return ExtractedDocument(
+                file_id=doc.file_id, 
+                document_type=doc.actual_type.value, 
+                fields=[], 
+                extraction_confidence=0.0
+            )
 
-        elif doc.actual_type == DocumentType.LAB_REPORT:
-            fields.append(ExtractedField(field_name="test_name", value="Complete Blood Count", confidence=0.93, source_document=doc.file_id))
-            
-    return ExtractedDocument(
-        file_id=doc.file_id, 
-        document_type=doc.actual_type.value, 
-        fields=fields, 
-        extraction_confidence=0.95 if fields else 0.5
-    )
+        extraction_result = extract_document_data(doc.file_path, doc.actual_type.value)
+        
+        for name, value in extraction_result.extracted_fields.items():
+            if value is not None:
+                fields.append(ExtractedField(
+                    field_name=name, 
+                    value=value, 
+                    confidence=extraction_result.confidence_score, 
+                    source_document=doc.file_id
+                ))
+                
+        return ExtractedDocument(
+            file_id=doc.file_id, 
+            document_type=doc.actual_type.value, 
+            fields=fields, 
+            extraction_confidence=extraction_result.confidence_score
+        )
 
 
 def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     claim = ClaimSubmission(**state["claim"])
     documents = [DocumentUpload(**d) for d in state["documents"]]
     simulate_failure = claim.simulate_component_failure
@@ -97,13 +102,17 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
     line_items = None
     hospital_name = state.get("hospital_name")
     for ext_doc in extracted:
+        print(f"\\n--- Extracted Data from {ext_doc.document_type} ({ext_doc.file_id}) ---")
+        for field in ext_doc.fields:
+            print(f"  {field.field_name}: {field.value}")
+        print("---------------------------------------------------")
         for field in ext_doc.fields:
             if field.field_name == "diagnosis" and not diagnosis: diagnosis = field.value
             if field.field_name == "treatment" and not treatment: treatment = field.value
             if field.field_name == "hospital_name" and not hospital_name: hospital_name = field.value
             if field.field_name == "line_items" and not line_items: line_items = field.value
 
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     avg_conf = sum(e.extraction_confidence for e in extracted) / len(extracted) if extracted else 0
     trace_step = TraceStep(
         agent_name="document_extractor", display_name="🔍 Document Extraction",
@@ -116,10 +125,21 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
         message=f"Component failure simulated — degraded extraction." if simulate_failure else f"Extracted from {len(extracted)} doc(s), avg confidence {avg_conf:.0%}.",
     )
 
+    # ── Check for critical missing info ──────────────────────────────────
+    should_stop = False
+    has_prescription = any(doc.actual_type.value == "PRESCRIPTION" for doc in documents)
+    
+    if has_prescription and not diagnosis:
+        should_stop = True
+        warnings.append("Critical information missing: Diagnosis could not be extracted from the prescription.")
+        trace_step.status = TraceStepStatus.FAILED
+        trace_step.message = "Extraction failed: Diagnosis missing."
+    print('extractor complete!!----------------------------------------')
     return {
         "extracted_data": [e.model_dump() for e in extracted],
         "diagnosis": diagnosis, "treatment": treatment,
         "hospital_name": hospital_name or claim.hospital_name,
         "line_items": line_items, "component_failures": component_failures,
+        "should_stop": should_stop,
         "trace": state.get("trace", []) + [trace_step.model_dump()],
     }

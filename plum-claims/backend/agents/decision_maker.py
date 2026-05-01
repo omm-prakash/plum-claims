@@ -18,6 +18,7 @@ from models.decision import (
     TraceStep, TraceStepStatus,
 )
 from agents.state import ClaimPipelineState
+from services.llm_service import evaluate_decision_confidence
 
 
 def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
@@ -45,6 +46,17 @@ def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
             doc_verification=DocVerificationResult(**doc_verification) if doc_verification else None,
             trace=state.get("trace", []),
             component_failures=component_failures,
+        )
+        return _build_output(state, result, started_at)
+    # ── 1.5. Extraction failed (critical info missing) → MANUAL_REVIEW ───
+    if state.get("should_stop", False) and doc_verification.get("passed", True):
+        result = DecisionResult(
+            claim_id=claim.claim_id, decision=ClaimDecision.MANUAL_REVIEW,
+            approved_amount=0, claimed_amount=claim.claimed_amount,
+            confidence_score=0.1, reasons=["EXTRACTION_FAILED"],
+            explanation="Critical information (Diagnosis) could not be extracted from the documents. Routing to manual review.",
+            trace=state.get("trace", []),
+            component_failures=component_failures + ["document_extractor"],
         )
         return _build_output(state, result, started_at)
 
@@ -84,20 +96,44 @@ def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
     else:
         explanation_parts.append("All policy checks passed.")
 
+    # ── Calculate Context for Confidence Scoring ─────────────────────────
+    extracted_data = state.get("extracted_data", [])
+    avg_extraction_conf = 1.0
+    if extracted_data:
+        avg_extraction_conf = sum(e.get("extraction_confidence", 1.0) for e in extracted_data) / len(extracted_data)
+        
+    fraud_score = fraud_check.get("fraud_score", 0.0)
+
     # ── 3. Fraud signals → MANUAL_REVIEW ─────────────────────────────────
     if fraud_check.get("requires_manual_review", False):
         decision = ClaimDecision.MANUAL_REVIEW
-        reasons = ["FRAUD_SIGNALS_DETECTED"]
+        if "FRAUD_SIGNALS_DETECTED" not in reasons:
+            reasons.append("FRAUD_SIGNALS_DETECTED")
         fraud_signals = fraud_check.get("signals", [])
         explanation_parts.append("Claim flagged for manual review due to suspicious patterns:")
         for sig in fraud_signals:
             explanation_parts.append(f"• {sig.get('signal', '')}: {sig.get('detail', '')}")
-        confidence = 0.70
 
-    # ── 4. Component failures → lower confidence ─────────────────────────
+    # ── 3.5. Low Extraction Confidence → MANUAL_REVIEW ───────────────────
+    if avg_extraction_conf < 0.80:
+        if decision != ClaimDecision.REJECTED:
+            decision = ClaimDecision.MANUAL_REVIEW
+        if "LOW_EXTRACTION_CONFIDENCE" not in reasons:
+            reasons.append("LOW_EXTRACTION_CONFIDENCE")
+        explanation_parts.append(f"Claim flagged for manual review due to low AI extraction confidence ({avg_extraction_conf:.0%}).")
+
+    # ── 4. Component failures ────────────────────────────────────────────
     if component_failures:
-        confidence *= 0.6
         explanation_parts.append(f"⚠️ Component failure(s) detected: {', '.join(component_failures)}. Confidence reduced. Manual review recommended.")
+
+    # ── 4.5 Evaluate Final Confidence using LLM ──────────────────────────
+    confidence = evaluate_decision_confidence(
+        decision=decision.value,
+        reasons=reasons,
+        avg_extraction_conf=avg_extraction_conf,
+        fraud_score=fraud_score,
+        component_failures=component_failures
+    )
 
     # ── 5. Compute final approved amount ─────────────────────────────────
     approved_amount = 0

@@ -2,6 +2,8 @@ import os
 import base64
 import json
 from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 
 import fitz  # PyMuPDF
@@ -18,9 +20,15 @@ load_dotenv()
 # Using llama-3.2-90b-vision-preview as it is specifically designed for image reasoning
 def get_vision_llm():
     return ChatGroq(
-        model="llama-3.2-90b-vision-preview",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         temperature=0.1,  # Low temperature for deterministic extraction
         max_tokens=500,
+    )
+
+def get_text_llm():
+    return ChatGroq(
+        model="openai/gpt-oss-120b",
+        temperature=0.1,
     )
 
 class DocumentAnalysisResult(BaseModel):
@@ -115,3 +123,124 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
         print(f"Error calling Vision LLM: {e}")
         # Graceful fallback if LLM fails (e.g. rate limit, parsing error)
         return DocumentAnalysisResult(quality="POOR", patient_name=None)
+
+class DocumentExtractionResult(BaseModel):
+    confidence_score: float = Field(description="A confidence score between 0.0 and 1.0 indicating how certain you are of the extracted values.")
+    extracted_fields: dict[str, Any] = Field(description="A dictionary containing the extracted fields.")
+
+def extract_document_data(file_path: str, document_type: str) -> DocumentExtractionResult:
+    """Extract structured data from a document using a Vision LLM."""
+    if not os.environ.get("GROQ_API_KEY"):
+        return DocumentExtractionResult(confidence_score=0.9, extracted_fields={})
+
+    try:
+        base64_image = encode_file_to_base64(file_path)
+    except Exception as e:
+        print(f"Error encoding file: {e}")
+        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={})
+
+    llm = get_vision_llm()
+    parser = JsonOutputParser(pydantic_object=DocumentExtractionResult)
+
+    fields_to_extract = ""
+    if document_type == "PRESCRIPTION":
+        fields_to_extract = "- doctor_name (string), registration_number (string), specialization (string)\n    - patient_name (string), age (int), gender (string), date (string)\n    - diagnosis (string)\n    - medicines (list of dicts with 'name', 'dosage', 'duration')\n    - tests_ordered (list of strings)\n    - clinic_name (string), clinic_address (string)"
+    elif document_type in ["HOSPITAL_BILL", "PHARMACY_BILL"]:
+        fields_to_extract = "- hospital_name (string), hospital_address (string), gstin (string)\n    - bill_number (string), date (string)\n    - patient_name (string), age (int), gender (string)\n    - line_items (list of dicts with 'description', 'amount')\n    - gst_amount (float), total_amount (float)"
+    elif document_type in ["LAB_REPORT", "DIAGNOSTIC_REPORT", "DENTAL_REPORT"]:
+        fields_to_extract = "- lab_name (string), nabl_status (string)\n    - patient_name (string), age (int), gender (string)\n    - referring_doctor (string)\n    - sample_date (string), report_date (string)\n    - tests (list of dicts with 'test_name', 'result', 'unit', 'normal_range')\n    - pathologist_name (string), pathologist_registration (string)\n    - remarks (string)"
+    else:
+        fields_to_extract = "- patient_name (string), date (string)\n    - hospital_name (string)\n    - diagnosis (string)\n    - treatment (string)"
+
+    prompt_text = f"""
+    You are an expert medical document extraction assistant for a health insurance claims processing system.
+    Your task is to extract structured information from the provided {document_type} image.
+
+    Extract the following fields (if present):
+    {fields_to_extract}
+
+    Extract the values accurately. If a field is not found, omit it from the extracted_fields dictionary.
+    Provide a 'confidence_score' between 0.0 and 1.0 representing your certainty in the extracted data.
+
+    Provide ONLY the requested JSON output format.
+    {{format_instructions}}
+    """
+
+    format_instructions = parser.get_format_instructions()
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": prompt_text.format(format_instructions=format_instructions)},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{base64_image}"},
+            },
+        ]
+    )
+
+    try:
+        response = llm.invoke([msg])
+        result = parser.invoke(response.content)
+        return DocumentExtractionResult(**result)
+    except Exception as e:
+        print(f"Error calling Vision LLM for extraction: {e}")
+        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={})
+
+class ConfidenceEvaluationResult(BaseModel):
+    confidence_score: float = Field(description="The overall confidence score between 0.0 and 1.0 for the claim decision.")
+
+def evaluate_decision_confidence(
+    decision: str, 
+    reasons: list[str], 
+    avg_extraction_conf: float, 
+    fraud_score: float, 
+    component_failures: list[str]
+) -> float:
+    """Evaluate the overall confidence of the pipeline's claim decision using an LLM."""
+    if not os.environ.get("GROQ_API_KEY"):
+        return 0.95
+        
+    llm = get_text_llm()
+    parser = JsonOutputParser(pydantic_object=ConfidenceEvaluationResult)
+    
+    prompt_text = """
+    You are an AI auditor for a health insurance claims processing system.
+    The automated pipeline has reached a decision on a claim. You need to assign an overall confidence score (0.0 to 1.0) to this decision based on the following context.
+    
+    Pipeline Context:
+    - Final Decision: {decision}
+    - Reasons/Flags: {reasons}
+    - Average Data Extraction Confidence: {avg_extraction_conf}
+    - Fraud Score: {fraud_score}
+    - Component Failures: {component_failures}
+    
+    Instructions:
+    1. If there are component failures, the confidence should be significantly lower (e.g., < 0.6).
+    2. If the fraud score is high (> 0.5), the confidence in an automated approval should be lower, but confidence in a MANUAL_REVIEW decision might still be high because it was correctly flagged.
+    3. If extraction confidence is low, the overall confidence should be similarly low.
+    4. If the decision is REJECTED due to clear policy violations with high extraction confidence and no failures, the confidence should be high (> 0.9).
+    5. Provide a realistic confidence score reflecting how trustworthy the system's output is given the context.
+    
+    Provide ONLY the requested JSON output format.
+    {format_instructions}
+    """
+    
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": prompt_text.format(
+                decision=decision,
+                reasons=reasons,
+                avg_extraction_conf=avg_extraction_conf,
+                fraud_score=fraud_score,
+                component_failures=component_failures,
+                format_instructions=parser.get_format_instructions()
+            )}
+        ]
+    )
+    
+    try:
+        response = llm.invoke([msg])
+        result = parser.invoke(response.content)
+        return float(result.get("confidence_score", 0.85))
+    except Exception as e:
+        print(f"Error calling LLM for confidence evaluation: {e}")
+        return 0.85

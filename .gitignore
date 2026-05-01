@@ -1,2 +1,4 @@
 *.pyc
 *.db
+/plum-claims/backend/uploads/*
+/plum-claims/backend/db/*
