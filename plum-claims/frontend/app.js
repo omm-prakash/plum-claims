@@ -3,7 +3,7 @@
  * Connects to FastAPI backend for claim submission, viewing, and evaluation.
  */
 
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = 'https://plum-claims-g5lc.onrender.com/api';
 
 // ── Test Cases (embedded for client-side eval runner) ────────────────────────
 let TEST_CASES = null;
