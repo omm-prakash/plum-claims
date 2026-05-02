@@ -1,84 +1,117 @@
 """
-db/database.py — SQLite persistence layer for Plum Claims
+db/database.py — Supabase persistence layer for Plum Claims
 
-Tables
-------
-claims      : one row per claim submission (core fields + JSON blob for full result)
+Tables (PostgreSQL on Supabase)
+--------------------------------
+claims      : one row per claim submission (core fields + JSONB blob for full result)
 documents   : one row per uploaded document, FK → claims.claim_id
+
+Files are stored in Supabase Storage under the bucket defined by
+SUPABASE_STORAGE_BUCKET (default: "claim-documents").
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import sqlite3
-from datetime import datetime
+import mimetypes
+import uuid
+from datetime import datetime, date, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
-# ── DB location — backend/db/plum_claims.db ──────────────────────────────────
+from supabase import create_client, Client, ClientOptions
 
-DB_DIR = Path(__file__).parent
-DB_PATH = DB_DIR / "plum_claims.db"
-
-
-# ── Schema ────────────────────────────────────────────────────────────────────
-
-_DDL = """
-CREATE TABLE IF NOT EXISTS claims (
-    claim_id          TEXT PRIMARY KEY,
-    member_id         TEXT NOT NULL,
-    policy_id         TEXT NOT NULL,
-    claim_category    TEXT NOT NULL,
-    treatment_date    TEXT NOT NULL,
-    claimed_amount    REAL NOT NULL,
-    hospital_name     TEXT,
-    ytd_claims_amount REAL NOT NULL DEFAULT 0,
-    decision          TEXT,
-    approved_amount   REAL,
-    confidence_score  REAL,
-    submitted_at      TEXT NOT NULL,
-    result_json       TEXT,          -- full pipeline result as JSON
-    claim_json        TEXT           -- full ClaimSubmission as JSON
-);
-
-CREATE TABLE IF NOT EXISTS documents (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    claim_id          TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
-    file_id           TEXT NOT NULL,
-    file_name         TEXT,
-    actual_type       TEXT NOT NULL,
-    quality           TEXT NOT NULL DEFAULT 'GOOD',
-    patient_name_on_doc TEXT,
-    file_path         TEXT,
-    content_json      TEXT,          -- DocumentContent as JSON (may be NULL)
-    created_at        TEXT NOT NULL
-);
-"""
+from config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_STORAGE_BUCKET
 
 
-# ── Connection helper ─────────────────────────────────────────────────────────
+# ── JSON serialization helper ─────────────────────────────────────────────────
 
-def _get_conn() -> sqlite3.Connection:
-    """Return a connection with WAL mode and row-factory for dict-like rows."""
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def _json_safe(obj: Any) -> Any:
+    """Recursively convert a dict/list tree to JSON-serializable types."""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Enum):
+        return obj.value
+    return obj
 
+
+# ── Client singleton ──────────────────────────────────────────────────────────
+
+_client: Client | None = None
+
+
+def _get_client() -> Client:
+    global _client
+    if _client is None:
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env"
+            )
+        _client = create_client(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            options=ClientOptions(postgrest_client_timeout=60),
+        )
+    return _client
+
+
+# ── Startup ───────────────────────────────────────────────────────────────────
 
 def init_db() -> None:
-    """Create tables if they don't exist yet. Call once at startup."""
-    with _get_conn() as conn:
-        conn.executescript(_DDL)
-    print(f"[DB] Initialized SQLite database at {DB_PATH}")
+    """Verify Supabase connection is reachable. Called once at server startup."""
+    try:
+        client = _get_client()
+        # Lightweight ping — just fetch one row (or an empty result)
+        client.table("claims").select("claim_id").limit(1).execute()
+        print(f"[DB] Connected to Supabase project: {SUPABASE_URL}")
+    except Exception as exc:
+        print(f"[DB] WARNING — Supabase connection failed: {exc}")
+
+
+# ── Storage helpers ───────────────────────────────────────────────────────────
+
+def upload_file_to_storage(local_path: str, claim_id: str) -> str | None:
+    """
+    Upload a local file to Supabase Storage and return its public URL.
+    Returns None if the upload fails (non-fatal).
+    """
+    try:
+        client = _get_client()
+        path = Path(local_path)
+        mime_type, _ = mimetypes.guess_type(str(path))
+        mime_type = mime_type or "application/octet-stream"
+
+        # Storage key: claim_id/uuid_filename to avoid collisions
+        storage_key = f"{claim_id}/{uuid.uuid4().hex[:8]}_{path.name}"
+
+        with open(path, "rb") as f:
+            client.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+                path=storage_key,
+                file=f,
+                file_options={"content-type": mime_type},
+            )
+
+        # Build public URL
+        public_url = (
+            f"{SUPABASE_URL}/storage/v1/object/public/"
+            f"{SUPABASE_STORAGE_BUCKET}/{storage_key}"
+        )
+        return public_url
+    except Exception as exc:
+        print(f"[Storage] Upload failed for {local_path}: {exc}")
+        return None
 
 
 # ── Write operations ──────────────────────────────────────────────────────────
 
 def save_claim(claim_data: dict[str, Any], result: dict[str, Any]) -> None:
     """
-    Persist a processed claim and its documents.
+    Persist a processed claim and its documents to Supabase.
 
     Parameters
     ----------
@@ -87,122 +120,146 @@ def save_claim(claim_data: dict[str, Any], result: dict[str, Any]) -> None:
     result : dict
         Output of process_claim() — the full pipeline result
     """
+    client = _get_client()
     claim_id = claim_data["claim_id"]
-    submitted_at = datetime.utcnow().isoformat()
+    submitted_at = datetime.now(timezone.utc).isoformat()
 
-    # Extract top-level decision fields if present
     decision = result.get("decision")
     approved_amount = result.get("approved_amount")
     confidence_score = result.get("confidence_score")
 
-    with _get_conn() as conn:
-        # Upsert the claim row (replace on re-submit with same id)
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO claims
-                (claim_id, member_id, policy_id, claim_category, treatment_date,
-                 claimed_amount, hospital_name, ytd_claims_amount,
-                 decision, approved_amount, confidence_score,
-                 submitted_at, result_json, claim_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                claim_id,
-                claim_data.get("member_id", ""),
-                claim_data.get("policy_id", "PLUM_GHI_2024"),
-                str(claim_data.get("claim_category", "")),
-                str(claim_data.get("treatment_date", "")),
-                float(claim_data.get("claimed_amount", 0)),
-                claim_data.get("hospital_name"),
-                float(claim_data.get("ytd_claims_amount", 0)),
-                str(decision) if decision else None,
-                float(approved_amount) if approved_amount is not None else None,
-                float(confidence_score) if confidence_score is not None else None,
-                submitted_at,
-                json.dumps(result, default=str),
-                json.dumps(claim_data, default=str),
-            ),
-        )
+    # ── Upsert claim row ──────────────────────────────────────────────────────
+    claim_row = _json_safe({
+        "claim_id": claim_id,
+        "member_id": claim_data.get("member_id", ""),
+        "policy_id": claim_data.get("policy_id", "PLUM_GHI_2024"),
+        "claim_category": str(claim_data.get("claim_category", "")),
+        "treatment_date": str(claim_data.get("treatment_date", "")),
+        "claimed_amount": float(claim_data.get("claimed_amount", 0)),
+        "hospital_name": claim_data.get("hospital_name"),
+        "ytd_claims_amount": float(claim_data.get("ytd_claims_amount", 0)),
+        "decision": str(decision) if decision else None,
+        "approved_amount": float(approved_amount) if approved_amount is not None else None,
+        "confidence_score": float(confidence_score) if confidence_score is not None else None,
+        "submitted_at": submitted_at,
+        "result_json": result,
+        "claim_json": claim_data,
+    })
+    client.table("claims").upsert(claim_row).execute()
 
-        # Delete old document rows for this claim before re-inserting
-        conn.execute("DELETE FROM documents WHERE claim_id = ?", (claim_id,))
+    # ── Delete old document rows then re-insert ───────────────────────────────
+    client.table("documents").delete().eq("claim_id", claim_id).execute()
 
-        # Insert one row per document
-        for doc in claim_data.get("documents", []):
-            content = doc.get("content")
-            conn.execute(
-                """
-                INSERT INTO documents
-                    (claim_id, file_id, file_name, actual_type, quality,
-                     patient_name_on_doc, file_path, content_json, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    claim_id,
-                    doc.get("file_id", ""),
-                    doc.get("file_name"),
-                    str(doc.get("actual_type", "")),
-                    str(doc.get("quality", "GOOD")),
-                    doc.get("patient_name_on_doc"),
-                    doc.get("file_path"),
-                    json.dumps(content, default=str) if content else None,
-                    submitted_at,
-                ),
-            )
+    doc_rows = []
+    for doc in claim_data.get("documents", []):
+        local_file_path = doc.get("file_path")
+        storage_url: str | None = None
+
+        # If there's a real file on disk, push it to Supabase Storage
+        if local_file_path and Path(local_file_path).exists():
+            storage_url = upload_file_to_storage(local_file_path, claim_id)
+
+        content = doc.get("content")
+        doc_rows.append({
+            "claim_id": claim_id,
+            "file_id": doc.get("file_id", ""),
+            "file_name": doc.get("file_name"),
+            "actual_type": str(doc.get("actual_type", "")),
+            "quality": str(doc.get("quality", "GOOD")),
+            "patient_name_on_doc": doc.get("patient_name_on_doc"),
+            "file_path": storage_url or local_file_path,   # public URL preferred
+            "content_json": content,
+            "created_at": submitted_at,
+        })
+
+    if doc_rows:
+        client.table("documents").insert(doc_rows).execute()
 
 
 # ── Read operations ───────────────────────────────────────────────────────────
 
 def get_all_claims() -> list[dict[str, Any]]:
     """Return summary rows for every claim (no full JSON blobs)."""
-    with _get_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT claim_id, member_id, claim_category, claimed_amount,
-                   decision, approved_amount, confidence_score, submitted_at
-            FROM claims
-            ORDER BY submitted_at DESC
-            """
-        ).fetchall()
-    return [dict(r) for r in rows]
+    client = _get_client()
+    response = (
+        client.table("claims")
+        .select(
+            "claim_id, member_id, claim_category, claimed_amount, "
+            "decision, approved_amount, confidence_score, submitted_at"
+        )
+        .order("submitted_at", desc=True)
+        .execute()
+    )
+    return response.data or []
 
 
 def get_claim(claim_id: str) -> dict[str, Any] | None:
     """Return the full claim row including parsed result and claim JSON."""
-    with _get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM claims WHERE claim_id = ?", (claim_id,)
-        ).fetchone()
-        if not row:
-            return None
-        data = dict(row)
-        # Parse JSON blobs back into dicts
-        data["result"] = json.loads(data.pop("result_json") or "{}")
-        data["claim"] = json.loads(data.pop("claim_json") or "{}")
+    client = _get_client()
 
-        # Attach document rows
-        doc_rows = conn.execute(
-            "SELECT * FROM documents WHERE claim_id = ? ORDER BY id", (claim_id,)
-        ).fetchall()
-        docs = []
-        for dr in doc_rows:
-            d = dict(dr)
-            d["content"] = json.loads(d.pop("content_json") or "null")
-            docs.append(d)
-        data["documents"] = docs
+    claim_response = (
+        client.table("claims")
+        .select("*")
+        .eq("claim_id", claim_id)
+        .limit(1)
+        .execute()
+    )
+    rows = claim_response.data
+    if not rows:
+        return None
+
+    data = rows[0]
+    # Supabase returns JSONB columns as dicts already — rename to match old API
+    data["result"] = data.pop("result_json", {}) or {}
+    data["claim"] = data.pop("claim_json", {}) or {}
+
+    # Attach document rows
+    doc_response = (
+        client.table("documents")
+        .select("*")
+        .eq("claim_id", claim_id)
+        .order("id")
+        .execute()
+    )
+    docs = []
+    for dr in (doc_response.data or []):
+        dr["content"] = dr.pop("content_json", None)
+        docs.append(dr)
+    data["documents"] = docs
 
     return data
 
 
 def get_documents_for_claim(claim_id: str) -> list[dict[str, Any]]:
     """Return all document rows for a given claim."""
-    with _get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM documents WHERE claim_id = ? ORDER BY id", (claim_id,)
-        ).fetchall()
+    client = _get_client()
+    response = (
+        client.table("documents")
+        .select("*")
+        .eq("claim_id", claim_id)
+        .order("id")
+        .execute()
+    )
     result = []
-    for row in rows:
-        d = dict(row)
-        d["content"] = json.loads(d.pop("content_json") or "null")
-        result.append(d)
+    for row in (response.data or []):
+        row["content"] = row.pop("content_json", None)
+        result.append(row)
     return result
+
+
+# ── Async-safe wrappers (use these from FastAPI async endpoints) ───────────────
+
+async def async_save_claim(claim_data: dict[str, Any], result: dict[str, Any]) -> None:
+    """Thread-safe async wrapper for save_claim."""
+    await asyncio.to_thread(save_claim, claim_data, result)
+
+
+async def async_get_all_claims() -> list[dict[str, Any]]:
+    """Thread-safe async wrapper for get_all_claims."""
+    return await asyncio.to_thread(get_all_claims)
+
+
+async def async_get_claim(claim_id: str) -> dict[str, Any] | None:
+    """Thread-safe async wrapper for get_claim."""
+    return await asyncio.to_thread(get_claim, claim_id)
+

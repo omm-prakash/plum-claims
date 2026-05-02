@@ -8,7 +8,7 @@ Also computes a confidence score and generates a human-readable explanation.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimSubmission
@@ -22,7 +22,7 @@ from services.llm_service import evaluate_decision_confidence
 
 
 def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     claim = ClaimSubmission(**state["claim"])
     doc_verification = state.get("doc_verification", {})
     policy_check = state.get("policy_check", {})
@@ -177,7 +177,7 @@ def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
 
 
 def _build_output(state, result, started_at):
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     trace_step = TraceStep(
         agent_name="decision_maker", display_name="⚖️ Final Decision",
         status=TraceStepStatus.SUCCESS,

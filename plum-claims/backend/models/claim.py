@@ -5,7 +5,7 @@ uploaded documents, and related enums.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -95,7 +95,7 @@ class ClaimSubmission(BaseModel):
     claims_history: list[ClaimHistoryEntry] = Field(default_factory=list)
     documents: list[DocumentUpload] = Field(default_factory=list)
     simulate_component_failure: bool = False
-    submitted_at: datetime = Field(default_factory=datetime.utcnow)
+    submitted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("claimed_amount")
     @classmethod

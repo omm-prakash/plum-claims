@@ -2,3 +2,4 @@
 *.db
 /plum-claims/backend/uploads/*
 /plum-claims/backend/db/*
+/plum-claims/backend/.env

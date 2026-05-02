@@ -4,7 +4,7 @@ including the decision, amounts, confidence, and a full audit trail.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -132,4 +132,4 @@ class DecisionResult(BaseModel):
     trace: list[TraceStep] = Field(default_factory=list)
     component_failures: list[str] = Field(default_factory=list)
     requires_manual_review_note: Optional[str] = None
-    processed_at: datetime = Field(default_factory=datetime.utcnow)
+    processed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

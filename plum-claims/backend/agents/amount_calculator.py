@@ -11,7 +11,7 @@ Applies financial rules in the correct order:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimSubmission
@@ -21,7 +21,7 @@ from agents.state import ClaimPipelineState
 
 
 def amount_calculation_agent(state: ClaimPipelineState) -> dict[str, Any]:
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     engine = get_policy_engine()
     claim = ClaimSubmission(**state["claim"])
     policy_check = state.get("policy_check", {})
@@ -151,7 +151,7 @@ def amount_calculation_agent(state: ClaimPipelineState) -> dict[str, Any]:
 
 
 def _build_output(state, breakdown, started_at, steps):
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     trace_step = TraceStep(
         agent_name="amount_calculator", display_name="💰 Amount Calculation",
         status=TraceStepStatus.SUCCESS,

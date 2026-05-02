@@ -13,7 +13,7 @@ and returns a specific, actionable error message.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimCategory, ClaimSubmission, DocumentUpload, DocumentType, DocumentQuality
@@ -30,7 +30,7 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
     Input: claim category + uploaded documents
     Output: DocVerificationResult with pass/fail + specific error messages
     """
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     engine = get_policy_engine()
     claim = ClaimSubmission(**state["claim"])
     documents = [DocumentUpload(**d) for d in state["documents"]]
@@ -172,7 +172,7 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
         result.error_message = " | ".join(messages)
 
     # ── Build trace step ─────────────────────────────────────────────────
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     trace_step = TraceStep(
         agent_name="document_verifier",
         display_name="📄 Document Verification",

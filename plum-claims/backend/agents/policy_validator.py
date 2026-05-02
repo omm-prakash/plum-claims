@@ -10,7 +10,7 @@ Checks claim eligibility against policy rules:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimSubmission
@@ -20,7 +20,7 @@ from agents.state import ClaimPipelineState
 
 
 def policy_validation_agent(state: ClaimPipelineState) -> dict[str, Any]:
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     engine = get_policy_engine()
     claim = ClaimSubmission(**state["claim"])
     diagnosis = state.get("diagnosis")
@@ -126,7 +126,7 @@ def policy_validation_agent(state: ClaimPipelineState) -> dict[str, Any]:
 
 
 def _build_output(state, result, checks, started_at):
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     has_violations = len(result.violations) > 0
     trace_step = TraceStep(
         agent_name="policy_validator", display_name="✅ Policy Validation",

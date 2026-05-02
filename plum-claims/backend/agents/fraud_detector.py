@@ -9,7 +9,7 @@ Checks for fraud signals:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from models.claim import ClaimSubmission
@@ -19,7 +19,7 @@ from agents.state import ClaimPipelineState
 
 
 def fraud_detection_agent(state: ClaimPipelineState) -> dict[str, Any]:
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     engine = get_policy_engine()
     claim = ClaimSubmission(**state["claim"])
     thresholds = engine.get_fraud_thresholds()
@@ -81,7 +81,7 @@ def fraud_detection_agent(state: ClaimPipelineState) -> dict[str, Any]:
         result.requires_manual_review = True
         result.details.append(f"🚨 Fraud score {result.fraud_score:.2f} exceeds threshold {fraud_threshold}. Routing to manual review.")
 
-    completed_at = datetime.utcnow()
+    completed_at = datetime.now(timezone.utc)
     trace_step = TraceStep(
         agent_name="fraud_detector", display_name="🚨 Fraud Detection",
         status=TraceStepStatus.WARNING if result.requires_manual_review else TraceStepStatus.SUCCESS,
