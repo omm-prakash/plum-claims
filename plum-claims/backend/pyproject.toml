@@ -1,0 +1,8 @@
+[tool.poetry]
+name = "plum-claims-backend"
+version = "0.1.0"
+description = "Plum Insurance Claims Processing API"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.backends.legacy:build"
