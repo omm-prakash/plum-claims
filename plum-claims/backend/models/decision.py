@@ -94,6 +94,7 @@ class ExtractedDocument(BaseModel):
     raw_text: Optional[str] = None
     extraction_confidence: float = 1.0
     warnings: list[str] = Field(default_factory=list)
+    document_flags: list[str] = Field(default_factory=list)
 
 
 class PolicyCheckResult(BaseModel):

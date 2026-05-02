@@ -54,7 +54,7 @@ def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
             claim_id=claim.claim_id, decision=ClaimDecision.MANUAL_REVIEW,
             approved_amount=0, claimed_amount=claim.claimed_amount,
             confidence_score=0.1, reasons=["EXTRACTION_FAILED"],
-            explanation="Critical information (Diagnosis) could not be extracted from the documents. Routing to manual review.",
+            explanation="Some information could not be extracted from the documents. Routing to manual review.",
             trace=state.get("trace", []),
             component_failures=component_failures + ["document_extractor"],
         )

@@ -14,6 +14,7 @@ from typing import Any
 from models.claim import ClaimSubmission, DocumentUpload
 from models.decision import ExtractedDocument, ExtractedField, TraceStep, TraceStepStatus
 from agents.state import ClaimPipelineState
+from services.policy_engine import get_policy_engine
 
 
 def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
@@ -67,7 +68,8 @@ def _extract_from_content(doc: DocumentUpload) -> ExtractedDocument:
             file_id=doc.file_id, 
             document_type=doc.actual_type.value, 
             fields=fields, 
-            extraction_confidence=extraction_result.confidence_score
+            extraction_confidence=extraction_result.confidence_score,
+            document_flags=extraction_result.document_flags
         )
 
 
@@ -80,6 +82,9 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
     extracted: list[ExtractedDocument] = []
     component_failures = list(state.get("component_failures", []))
     warnings: list[str] = []
+    
+    engine = get_policy_engine()
+    member = engine.get_member(claim.member_id)
 
     if simulate_failure:
         component_failures.append("document_extractor")
@@ -98,19 +103,43 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
                 warnings.append(f"Failed to extract from {doc.file_id}: {e}")
                 extracted.append(ExtractedDocument(file_id=doc.file_id, document_type=doc.actual_type.value, extraction_confidence=0.3, warnings=[str(e)]))
 
-    diagnosis = treatment = hospital_name = None
+    diagnosis = treatment = None
     line_items = None
-    hospital_name = state.get("hospital_name")
+    extracted_hospital_name = None
+    extracted_patient_name = None
+    
     for ext_doc in extracted:
-        # print(f"\\n--- Extracted Data from {ext_doc.document_type} ({ext_doc.file_id}) ---")
-        # for field in ext_doc.fields:
-        #     print(f"  {field.field_name}: {field.value}")
-        # print("---------------------------------------------------")
         for field in ext_doc.fields:
             if field.field_name == "diagnosis" and not diagnosis: diagnosis = field.value
             if field.field_name == "treatment" and not treatment: treatment = field.value
-            if field.field_name == "hospital_name" and not hospital_name: hospital_name = field.value
+            if field.field_name == "hospital_name" and not extracted_hospital_name: extracted_hospital_name = field.value
+            if field.field_name == "patient_name" and not extracted_patient_name: extracted_patient_name = field.value
             if field.field_name == "line_items" and not line_items: line_items = field.value
+            
+        # Check mismatches for this specific document
+        doc_hospital = next((f.value for f in ext_doc.fields if f.field_name == "hospital_name"), None)
+        doc_patient = next((f.value for f in ext_doc.fields if f.field_name == "patient_name"), None)
+        
+        mismatch_found = False
+        if doc_hospital and claim.hospital_name:
+            h_ext = doc_hospital.lower().strip()
+            h_claim = claim.hospital_name.lower().strip()
+            if h_ext not in h_claim and h_claim not in h_ext:
+                warnings.append(f"Hospital name mismatch in {ext_doc.document_type}: Claim says '{claim.hospital_name}', document says '{doc_hospital}'.")
+                mismatch_found = True
+                
+        if doc_patient and member and member.name:
+            p_ext = doc_patient.lower().strip()
+            p_mem = member.name.lower().strip()
+            if p_ext not in p_mem and p_mem not in p_ext:
+                warnings.append(f"Patient name mismatch in {ext_doc.document_type}: Policy says '{member.name}', document says '{doc_patient}'.")
+                mismatch_found = True
+                
+        if mismatch_found:
+            # Reduce confidence score instead of halting
+            ext_doc.extraction_confidence = max(0.1, ext_doc.extraction_confidence - 0.3)
+            if "Name Mismatch" not in ext_doc.warnings:
+                ext_doc.warnings.append("Name Mismatch")
 
     completed_at = datetime.now(timezone.utc)
     avg_conf = sum(e.extraction_confidence for e in extracted) / len(extracted) if extracted else 0
@@ -120,25 +149,36 @@ def document_extraction_agent(state: ClaimPipelineState) -> dict[str, Any]:
         started_at=started_at, completed_at=completed_at,
         duration_ms=(completed_at - started_at).total_seconds() * 1000,
         input_summary={"documents_count": len(documents), "simulated_failure": simulate_failure},
-        output_summary={"extracted_count": len(extracted), "avg_confidence": round(avg_conf, 2), "diagnosis": diagnosis, "hospital": hospital_name},
+        output_summary={"extracted_count": len(extracted), "avg_confidence": round(avg_conf, 2), "diagnosis": diagnosis, "hospital": extracted_hospital_name},
         warnings=warnings,
         message=f"Component failure simulated — degraded extraction." if simulate_failure else f"Extracted from {len(extracted)} doc(s), avg confidence {avg_conf:.0%}.",
     )
 
-    # ── Check for critical missing info ──────────────────────────────────
+    # ── Check for missing info ───────────────────────────────────────────
     should_stop = False
     has_prescription = any(doc.actual_type.value == "PRESCRIPTION" for doc in documents)
+    has_missing_flags = any("MISSING_FIELDS" in getattr(doc, "document_flags", []) for doc in extracted)
     
     if has_prescription and not diagnosis:
         should_stop = True
         warnings.append("Critical information missing: Diagnosis could not be extracted from the prescription.")
         trace_step.status = TraceStepStatus.FAILED
         trace_step.message = "Extraction failed: Diagnosis missing."
+    elif has_missing_flags:
+        should_stop = True
+        warnings.append("Incomplete extraction: Some expected fields are missing from the documents.")
+        trace_step.status = TraceStepStatus.FAILED
+        trace_step.message = "Extraction incomplete: Missing fields detected."
+        
+    if warnings and trace_step.status == TraceStepStatus.SUCCESS:
+        trace_step.status = TraceStepStatus.WARNING
+        if any("mismatch" in w for w in warnings):
+            trace_step.message = "Extraction completed with name mismatches (reduced confidence)."
     # print('extractor complete!!----------------------------------------')
     return {
         "extracted_data": [e.model_dump() for e in extracted],
         "diagnosis": diagnosis, "treatment": treatment,
-        "hospital_name": hospital_name or claim.hospital_name,
+        "hospital_name": extracted_hospital_name or claim.hospital_name,
         "line_items": line_items, "component_failures": component_failures,
         "should_stop": should_stop,
         "trace": state.get("trace", []) + [trace_step.model_dump()],

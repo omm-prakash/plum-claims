@@ -76,14 +76,14 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     llm = get_vision_llm()
     parser = JsonOutputParser(pydantic_object=DocumentAnalysisResult)
 
-    prompt_text = f"""
+    prompt_text = """
     You are an expert document analysis assistant for a health insurance claims system.
     Please analyze the provided document image and output a JSON object with three fields: 'quality', 'patient_name', and 'detected_type'.
 
     1. **Document Quality Evaluation:**
     Carefully assess the legibility and overall quality of the document based on the following criteria:
     - **GOOD**: The document is perfectly clear, well-lit, fully legible, and all text is easily readable without any effort. No parts are obscured or blurred.
-    - **FAIR**: The document has minor issues like slight blurriness, slight shadows, or minor glare, but all critical information (names, dates, amounts, medical terms) can still be read and understood.
+    - **FAIR**: The document has minor issues like slight blurriness, slight shadows, minor glare, or skew (typical of phone photos), but all critical information (names, dates, amounts, medical terms) can still be read and understood. Map legible phone photos to FAIR or GOOD.
     - **POOR**: The document has significant issues such as severe blur, low resolution, very bad lighting, or parts of the document being cut off. Reading critical information requires significant effort and guessing.
     - **UNREADABLE**: The document is completely illegible, extremely blurry, too dark/bright, or is not a document at all. No text can be confidently extracted.
 
@@ -139,17 +139,18 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
 class DocumentExtractionResult(BaseModel):
     confidence_score: float = Field(description="A confidence score between 0.0 and 1.0 indicating how certain you are of the extracted values.")
     extracted_fields: dict[str, Any] = Field(description="A dictionary containing the extracted fields.")
+    document_flags: list[str] = Field(default=[], description="List of flags for document issues (e.g., DOCUMENT_ALTERATION, DUPLICATE_STAMP, MISSING_FIELDS, MULTILINGUAL).")
 
 def extract_document_data(file_path: str, document_type: str) -> DocumentExtractionResult:
     """Extract structured data from a document using a Vision LLM."""
     if not os.environ.get("GROQ_API_KEY"):
-        return DocumentExtractionResult(confidence_score=0.9, extracted_fields={})
+        return DocumentExtractionResult(confidence_score=0.9, extracted_fields={}, document_flags=[])
 
     try:
         base64_image = encode_file_to_base64(file_path)
     except Exception as e:
         print(f"Error encoding file: {e}")
-        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={})
+        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={}, document_flags=["ENCODING_ERROR"])
 
     llm = get_vision_llm()
     parser = JsonOutputParser(pydantic_object=DocumentExtractionResult)
@@ -171,8 +172,16 @@ def extract_document_data(file_path: str, document_type: str) -> DocumentExtract
     Extract the following fields (if present):
     {fields_to_extract}
 
-    Extract the values accurately. If a field is not found, omit it from the extracted_fields dictionary.
+    Extract the values accurately. If any of the requested fields are not found in the document, omit them from the extracted_fields dictionary, but you MUST add "MISSING_FIELDS" to the document_flags list.
     Provide a 'confidence_score' between 0.0 and 1.0 representing your certainty in the extracted data.
+
+    **Special Instructions for Indian Medical Documents:**
+    - **Handwritten Text:** Use best-effort OCR for handwriting. Expect common Indian diagnoses (e.g., Viral Fever, URI, Gastroenteritis, UTI, Dengue, Typhoid, Hypertension/HTN, Type 2 Diabetes/T2DM, Hypothyroidism, Lumbar Spondylosis, Knee Osteoarthritis, Migraine, GERD).
+    - **Rubber Stamps:** If rubber stamps obscure text (like registration numbers), do your best to extract the text and lower confidence for that field.
+    - **Multilingual Content:** Extract all English fields. If there is regional text (Hindi, Tamil, Telugu, etc.), ignore it but add "MULTILINGUAL" to document_flags.
+    - **Corrections/Alterations:** If amounts or text are crossed out and rewritten, extract the final corrected value and add "DOCUMENT_ALTERATION" to document_flags.
+    - **Duplicate Stamps:** If there are multiple "ORIGINAL" or "DUPLICATE" stamps, note this by adding "DUPLICATE_STAMP" to document_flags.
+    - **Partial Document:** If a page is cut off or folded, extract available fields and add "PARTIAL_DOCUMENT" to document_flags.
 
     Provide ONLY the requested JSON output format.
     {{format_instructions}}
@@ -195,7 +204,7 @@ def extract_document_data(file_path: str, document_type: str) -> DocumentExtract
         return DocumentExtractionResult(**result)
     except Exception as e:
         print(f"Error calling Vision LLM for extraction: {e}")
-        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={})
+        return DocumentExtractionResult(confidence_score=0.0, extracted_fields={}, document_flags=["LLM_ERROR"])
 
 class ConfidenceEvaluationResult(BaseModel):
     confidence_score: float = Field(description="The overall confidence score between 0.0 and 1.0 for the claim decision.")
