@@ -20,8 +20,15 @@ from models.claim import ClaimCategory, ClaimSubmission, DocumentUpload, Documen
 from models.decision import DocVerificationResult, TraceStep, TraceStepStatus
 from services.policy_engine import get_policy_engine
 from agents.state import ClaimPipelineState
-from services.llm_service import analyze_document
+from services.llm_service import analyze_document, encode_file_to_base64_list
 
+import os
+import base64
+import tempfile
+
+
+import logging
+logger = logging.getLogger(__name__)
 
 def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
     """
@@ -30,6 +37,7 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
     Input: claim category + uploaded documents
     Output: DocVerificationResult with pass/fail + specific error messages
     """
+    print(">>> VERIFIER STARTED", flush=True)
     started_at = datetime.now(timezone.utc)
     engine = get_policy_engine()
     claim = ClaimSubmission(**state["claim"])
@@ -78,25 +86,70 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
     for doc in documents:
         # Use Vision LLM to verify document quality and patient name if a file was uploaded
         if doc.file_path:
-            analysis = analyze_document(doc.file_path)
             try:
-                doc.quality = DocumentQuality(analysis.quality)
+                base64_images = encode_file_to_base64_list(doc.file_path)
+            except Exception as e:
+                logger.error(f"Error encoding file {doc.file_path}: {e}")
+                base64_images = []
+
+            if not base64_images:
+                check = {"check": f"Document readability: {doc.file_id}", "status": "FAIL"}
+                result.passed = False
+                result.unreadable_documents.append({
+                    "file_id": doc.file_id,
+                    "file_name": doc.file_name or doc.file_id,
+                    "document_type": doc.actual_type.value,
+                    "message": f"Could not read file {doc.file_name or doc.file_id}."
+                })
+                checks.append(check)
+                continue
+
+            # Run a single LLM call for all pages
+            analysis_result = analyze_document(doc.file_path)
+            
+            matching_page = None
+            matching_page_index = 0
+
+            # Scan the returned pages for a match
+            for page in analysis_result.pages:
+                logger.info(f"Page {page.page_index} detected type: {page.detected_type}")
+                if doc.actual_type.value == page.detected_type:
+                    matching_page = page
+                    matching_page_index = page.page_index
+                    break
+
+            if matching_page is None:
+                # No page matched the expected document type. Use the first page's analysis for the error.
+                matching_page = analysis_result.pages[0]
+                matching_page_index = matching_page.page_index
+            else:
+                # Isolate the page for downstream agents
+                new_path = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_page{matching_page_index}.png")
+                with open(new_path, "wb") as f:
+                    f.write(base64.b64decode(base64_images[matching_page_index]))
+                doc.file_path = new_path
+
+            print(f">>> ANALYSIS: {matching_page}", flush=True)
+            try:
+                doc.quality = DocumentQuality(matching_page.quality)
             except ValueError:
                 doc.quality = DocumentQuality.POOR # fallback
-            doc.patient_name_on_doc = analysis.patient_name
-
+            doc.patient_name_on_doc = matching_page.patient_name
+            print(f">>> PATIENT NAME: {matching_page.patient_name}", flush=True)
+            
             # Check for document type mismatch from LLM
-            if analysis.detected_type != "UNKNOWN" and analysis.detected_type != doc.actual_type.value:
+            if "UNKNOWN" != matching_page.detected_type and doc.actual_type.value != matching_page.detected_type:
                 result.passed = False
                 doc_type_display = doc.actual_type.value.replace("_", " ").title()
-                detected_display = analysis.detected_type.replace("_", " ").title()
+                print(f">>> DETECTED TYPES: {matching_page.detected_type}", flush=True)
+                detected_display = matching_page.detected_type.replace("_", " ").title()
                 
                 result.wrong_documents.append({
                     "expected": doc.actual_type.value,
-                    "uploaded_instead": [analysis.detected_type],
+                    "uploaded_instead": [matching_page.detected_type],
                     "message": (
                         f"Document type mismatch: You selected {doc_type_display} "
-                        f"but our system detected a {detected_display}. "
+                        f"but our system detected: {detected_display}. "
                         f"Please select the correct document type and resubmit."
                     )
                 })
@@ -106,7 +159,7 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
                 }
                 checks.append(check)
                 continue # skip quality check if type doesn't match
-            print(analysis.detected_type )
+            print(analysis.detected_types)
 
         check = {
             "check": f"Document quality: {doc.file_id} ({doc.actual_type.value})",
@@ -193,7 +246,11 @@ def document_verification_agent(state: ClaimPipelineState) -> dict[str, Any]:
         message=result.error_message if not result.passed else "All documents verified successfully.",
     )
 
+    # Ensure that state['documents'] is updated with any file_path changes (isolated pages)
+    state["documents"] = [d.model_dump() for d in documents]
+
     return {
+        "documents": state["documents"],
         "doc_verification": result.model_dump(),
         "should_stop": not result.passed,
         "trace": state.get("trace", []) + [trace_step.model_dump()],

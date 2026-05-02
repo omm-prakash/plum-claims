@@ -137,10 +137,13 @@ def decision_maker_agent(state: ClaimPipelineState) -> dict[str, Any]:
 
     # ── 5. Compute final approved amount ─────────────────────────────────
     approved_amount = 0
-    if decision in (ClaimDecision.APPROVED, ClaimDecision.PARTIAL):
-        approved_amount = amount_calc.get("final_approved_amount", 0)
-    elif decision == ClaimDecision.MANUAL_REVIEW:
-        approved_amount = amount_calc.get("final_approved_amount", 0)  # Tentative
+    if decision in (ClaimDecision.APPROVED, ClaimDecision.PARTIAL, ClaimDecision.MANUAL_REVIEW):
+        calc_amount = amount_calc.get("final_approved_amount", 0)
+        # Always approve MIN of claimed amount and calculated amount
+        approved_amount = min(calc_amount, claim.claimed_amount)
+        
+        if calc_amount > claim.claimed_amount:
+            explanation_parts.append(f"Note: Calculated eligible amount (₹{calc_amount:,.0f}) exceeds the claimed amount (₹{claim.claimed_amount:,.0f}). Approving the claimed amount.")
 
     # ── 6. Build explanation ─────────────────────────────────────────────
     if decision == ClaimDecision.APPROVED:

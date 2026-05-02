@@ -4,27 +4,29 @@
 
 The Plum Claims Processing System is an AI-powered, multi-agent pipeline that automates health insurance claims adjudication. It processes claims through six sequential agents, each performing a specialized task, and produces an explainable decision with a full audit trail.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Plum Claims Processing System                       │
 │                                                                            │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐ │
-│  │  FastAPI  │──▶│ LangGraph│──▶│  Policy  │──▶│ In-Memory│──▶│Frontend │ │
-│  │  Server   │   │ Pipeline │   │  Engine  │   │  Store   │   │   UI    │ │
+│  │ Render   │──▶│ LangGraph│──▶│  Policy  │──▶│ Supabase │──▶│Frontend │ │
+│  │ FastAPI  │   │ Pipeline │   │  Engine  │   │ PostgreSQL│   │   UI    │ │
 │  └──────────┘   └──────────┘   └──────────┘   └──────────┘   └─────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Technology Stack
+### Technology Stack & Distributed Deployment
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
+| **Hosting** | Render (Web Service) | Containerized persistent hosting without serverless timeout limits |
+| **Database** | Supabase (PostgreSQL) | Serverless Postgres for persistent, scalable claims storage |
 | **API Framework** | FastAPI | Async-native, auto-generated docs, Pydantic validation |
 | **Agent Orchestration** | LangGraph | Directed graph with conditional edges, state management |
 | **Data Validation** | Pydantic v2 | Strict typing, JSON schema generation |
 | **Policy Engine** | Custom Python | Stateless, loads from `policy_terms.json` — zero hardcoded rules |
-| **Frontend** | Vanilla HTML/CSS/JS | No build step needed, served by FastAPI |
-| **Testing** | pytest + custom eval runner | 50+ unit tests + 12 integration test cases |
+| **Frontend** | Vanilla HTML/CSS/JS | Served statically, communicates with deployed Render API |
+| **LLM Inference** | Groq (Llama 3.2 Vision) | Extremely low latency vision models for rapid extraction |
 
 ---
 
@@ -207,26 +209,24 @@ The frontend renders these as an **expandable trace timeline**, allowing ops tea
 
 ---
 
-## 6. Scaling Considerations (10x Load)
+## 6. Scope of Improvement in Architecture (Scaling to 10x Load)
 
-At 10x load (~10,000+ claims/day), the following changes would be needed:
+Currently, the system uses Supabase for persistent storage and Render for robust hosting. However, at 10x load (~10,000+ claims/day), the following architectural changes would be required:
 
-| Current | At Scale |
-|---------|----------|
-| In-memory `claims_store` dict | PostgreSQL with async driver (asyncpg) |
-| Single uvicorn worker | Multiple workers behind nginx/Gunicorn, horizontal scaling |
-| Synchronous pipeline | Celery/Redis task queue for async processing |
-| No caching | Redis cache for policy engine (it's stateless, ideal for caching) |
-| Single-file policy JSON | Database-backed policy store with version history |
-| No rate limiting | API rate limiting per member/company |
-| No monitoring | Prometheus metrics + Grafana dashboards |
-| File-based logging | Structured logging to ELK/Loki stack |
+| Current Architecture | At 10x Scale | Reason |
+|---------|----------|--------|
+| **Synchronous LLM Pipeline** | Celery/Redis background workers | Long-running Vision LLM requests currently hold the HTTP connection open. Moving to async workers prevents blocking the FastAPI event loop. |
+| **Single uvicorn worker** | Horizontal scaling via Kubernetes/AWS ECS | To handle concurrent claim submissions without queuing latency. |
+| **Direct Supabase Connection** | Connection Pooling (PgBouncer) | Prevents exhausting database connection limits during traffic spikes. |
+| **No caching** | Redis cache for Policy Engine | Policy JSON is stateless and read-heavy; caching it in memory reduces file I/O operations. |
+| **Local File Uploads** | Direct-to-S3 pre-signed URLs | Currently, files are saved locally on Render before being processed. Direct S3 uploads reduce server bandwidth and disk I/O. |
+| **Single-file policy JSON** | Database-backed policy store | A relational DB for policy rules allows versioning and dynamic updates without redeploying code. |
+| **Basic Error Logging** | OpenTelemetry + ELK/Datadog | Centralized, searchable logs for proactive alerting on component failures. |
 
 ### What Wouldn't Change
-- The LangGraph pipeline architecture (agents are stateless, horizontally scalable)
-- The policy engine interface (swap storage backend, keep the same API)
-- The Pydantic models (they're the contract)
-- The trace/observability structure (just route to a persistent store)
+- **LangGraph Architecture:** The agents are stateless and inherently horizontally scalable.
+- **Pydantic Contracts:** The data validation layer remains identical.
+- **Trace Observability:** The `TraceStep` structure is perfect, it would simply be routed to a persistent logging sink (e.g., Loki) instead of returned synchronously.
 
 ---
 

@@ -31,14 +31,18 @@ def get_text_llm():
         temperature=0.1,
     )
 
-class DocumentAnalysisResult(BaseModel):
-    quality: str = Field(description="The quality of the document: GOOD, FAIR, POOR, or UNREADABLE")
-    patient_name: str | None = Field(description="The patient name extracted from the document, or null if not found")
-    detected_type: str = Field(description="The exact document type detected, must be one of: PRESCRIPTION, HOSPITAL_BILL, LAB_REPORT, DIAGNOSTIC_REPORT, PHARMACY_BILL, DENTAL_REPORT, DISCHARGE_SUMMARY, or UNKNOWN")
+class PageAnalysis(BaseModel):
+    page_index: int = Field(description="The 0-based index of the page being analyzed.")
+    quality: str = Field(description="The quality of this specific page: GOOD, FAIR, POOR, or UNREADABLE")
+    patient_name: str | None = Field(description="The patient name extracted from this specific page, or null if not found")
+    detected_type: str = Field(description="The exact document type detected on this specific page. Valid options: PRESCRIPTION, HOSPITAL_BILL, LAB_REPORT, DIAGNOSTIC_REPORT, PHARMACY_BILL, DENTAL_REPORT, DISCHARGE_SUMMARY, or UNKNOWN")
 
-def encode_file_to_base64(file_path: str) -> str:
-    """Read a file and convert it to a base64 encoded string.
-    If it's a PDF, render the first page to an image.
+class DocumentAnalysisResult(BaseModel):
+    pages: list[PageAnalysis] = Field(description="An array containing the analysis for every page provided.")
+
+def encode_file_to_base64_list(file_path: str, max_pages: int = 5) -> list[str]:
+    """Read a file and convert it to a list of base64 encoded strings.
+    If it's a PDF, render up to max_pages to images.
     """
     path = Path(file_path)
     if not path.exists():
@@ -46,60 +50,62 @@ def encode_file_to_base64(file_path: str) -> str:
 
     ext = path.suffix.lower()
     if ext == ".pdf":
-        # Convert first page of PDF to image
         doc = fitz.open(str(path))
         if len(doc) == 0:
             raise ValueError("PDF is empty")
-        page = doc.load_page(0)
-        # Render at 150 DPI for decent quality but manageable size
-        pix = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
-        image_bytes = pix.tobytes("png")
+        
+        base64_images = []
+        pages_to_process = min(len(doc), max_pages)
+        for i in range(pages_to_process):
+            page = doc.load_page(i)
+            # Render at 150 DPI for decent quality but manageable size
+            pix = page.get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
+            image_bytes = pix.tobytes("png")
+            base64_images.append(base64.b64encode(image_bytes).decode('utf-8'))
         doc.close()
-        return base64.b64encode(image_bytes).decode('utf-8')
+        return base64_images
     else:
         # Assume it's an image
         with open(path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
+            return [base64.b64encode(image_file.read()).decode('utf-8')]
 
 def analyze_document(file_path: str) -> DocumentAnalysisResult:
-    """Analyze a document for quality and extract the patient name using a Vision LLM."""
+    """Analyze all pages of a document for quality and extract patient name and type using a Vision LLM in a single pass."""
     if not os.environ.get("GROQ_API_KEY"):
         print("Warning: GROQ_API_KEY not set. Simulating LLM response.")
-        return DocumentAnalysisResult(quality="GOOD", patient_name="Rajesh Kumar", detected_type="UNKNOWN")
+        return DocumentAnalysisResult(pages=[PageAnalysis(page_index=0, quality="GOOD", patient_name="Rajesh Kumar", detected_type="UNKNOWN")])
 
     try:
-        base64_image = encode_file_to_base64(file_path)
+        base64_images = encode_file_to_base64_list(file_path)
     except Exception as e:
         print(f"Error encoding file: {e}")
-        return DocumentAnalysisResult(quality="UNREADABLE", patient_name=None, detected_type="UNKNOWN")
+        return DocumentAnalysisResult(pages=[PageAnalysis(page_index=0, quality="UNREADABLE", patient_name=None, detected_type="UNKNOWN")])
 
     llm = get_vision_llm()
     parser = JsonOutputParser(pydantic_object=DocumentAnalysisResult)
 
     prompt_text = """
     You are an expert document analysis assistant for a health insurance claims system.
-    Please analyze the provided document image and output a JSON object with three fields: 'quality', 'patient_name', and 'detected_type'.
+    Please analyze the provided document images (which represent sequential pages of a document).
+    Output a JSON object with a single 'pages' array. Each item in the array must correspond to one page and include: 'page_index', 'quality', 'patient_name', and 'detected_type'.
 
+    For each page in the document (starting from page_index 0):
+    
     1. **Document Quality Evaluation:**
-    Carefully assess the legibility and overall quality of the document based on the following criteria:
-    - **GOOD**: The document is perfectly clear, well-lit, fully legible, and all text is easily readable without any effort. No parts are obscured or blurred.
-    - **FAIR**: The document has minor issues like slight blurriness, slight shadows, minor glare, or skew (typical of phone photos), but all critical information (names, dates, amounts, medical terms) can still be read and understood. Map legible phone photos to FAIR or GOOD.
-    - **POOR**: The document has significant issues such as severe blur, low resolution, very bad lighting, or parts of the document being cut off. Reading critical information requires significant effort and guessing.
-    - **UNREADABLE**: The document is completely illegible, extremely blurry, too dark/bright, or is not a document at all. No text can be confidently extracted.
-
+    Carefully assess the legibility and overall quality of the page based on the following criteria:
+    - **GOOD**: perfectly clear, well-lit, fully legible.
+    - **FAIR**: minor blurriness or glare, but critical information is readable.
+    - **POOR**: severe blur, low resolution, bad lighting.
+    - **UNREADABLE**: completely illegible.
     Determine the quality and output one of these exact strings: "GOOD", "FAIR", "POOR", "UNREADABLE".
 
     2. **Patient Name Extraction:**
-    Carefully scan the document to locate the name of the patient.
-    - Look for explicit labels such as "Patient Name:", "Name:", "Pt Name", or "Issued to:".
-    - In prescriptions or lab reports, the patient's name is usually at the top, often near the age/gender or date.
-    - In hospital bills, look for the "Billed To" section.
-    - Be careful not to confuse the patient's name with the Doctor's name, the Hospital's name, or the person who signed the document.
-    - Extract ONLY the full name of the patient as it appears on the document.
-    - If you cannot find a patient name, output null.
+    Carefully scan the page to locate the name of the patient.
+    - Extract ONLY the full name of the patient as it appears on the page.
+    - If you cannot find a patient name on this specific page, output null.
 
     3. **Document Type Classification:**
-    Classify the document into exactly one of the following categories based on its visual contents and layout:
+    Classify the specific page into EXACTLY ONE of the following categories based on its visual contents:
     - "PRESCRIPTION": Doctor's notes prescribing medication, tests, or treatment.
     - "HOSPITAL_BILL": An invoice or bill from a hospital or clinic showing charges.
     - "PHARMACY_BILL": A receipt specifically for purchased medicines.
@@ -107,7 +113,7 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     - "DENTAL_REPORT": Notes or reports specific to dental work.
     - "DISCHARGE_SUMMARY": A detailed summary given when a patient leaves a hospital.
     - "UNKNOWN": If the document is none of the above or cannot be identified.
-    Output the exact string matching the classification.
+    Output the exact string matching the classification for this page.
 
     Provide ONLY the requested JSON output format.
     {format_instructions}
@@ -117,15 +123,18 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
     format_instructions = parser.get_format_instructions()
     
     # Construct the message
-    msg = HumanMessage(
-        content=[
-            {"type": "text", "text": prompt_text.replace("{format_instructions}", format_instructions)},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{base64_image}"},
-            },
-        ]
-    )
+    content = [{"type": "text", "text": prompt_text.replace("{format_instructions}", format_instructions)}]
+    for i, b64 in enumerate(base64_images):
+        content.append({
+            "type": "text",
+            "text": f"--- Page {i} ---"
+        })
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"},
+        })
+        
+    msg = HumanMessage(content=content)
 
     try:
         response = llm.invoke([msg])
@@ -133,8 +142,8 @@ def analyze_document(file_path: str) -> DocumentAnalysisResult:
         return DocumentAnalysisResult(**result)
     except Exception as e:
         print(f"Error calling Vision LLM: {e}")
-        # Graceful fallback if LLM fails (e.g. rate limit, parsing error)
-        return DocumentAnalysisResult(quality="POOR", patient_name=None, detected_type="UNKNOWN")
+        # Graceful fallback if LLM fails
+        return DocumentAnalysisResult(pages=[PageAnalysis(page_index=0, quality="POOR", patient_name=None, detected_type="UNKNOWN")])
 
 class DocumentExtractionResult(BaseModel):
     confidence_score: float = Field(description="A confidence score between 0.0 and 1.0 indicating how certain you are of the extracted values.")
@@ -147,7 +156,7 @@ def extract_document_data(file_path: str, document_type: str) -> DocumentExtract
         return DocumentExtractionResult(confidence_score=0.9, extracted_fields={}, document_flags=[])
 
     try:
-        base64_image = encode_file_to_base64(file_path)
+        base64_images = encode_file_to_base64_list(file_path)
     except Exception as e:
         print(f"Error encoding file: {e}")
         return DocumentExtractionResult(confidence_score=0.0, extracted_fields={}, document_flags=["ENCODING_ERROR"])
@@ -188,15 +197,15 @@ def extract_document_data(file_path: str, document_type: str) -> DocumentExtract
     """
 
     format_instructions = parser.get_format_instructions()
-    msg = HumanMessage(
-        content=[
-            {"type": "text", "text": prompt_text.format(format_instructions=format_instructions)},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{base64_image}"},
-            },
-        ]
-    )
+    
+    content = [{"type": "text", "text": prompt_text.format(format_instructions=format_instructions)}]
+    for b64 in base64_images:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}"},
+        })
+        
+    msg = HumanMessage(content=content)
 
     try:
         response = llm.invoke([msg])
