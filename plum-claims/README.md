@@ -7,6 +7,36 @@ An AI-poIred, multi-agent health insurance claims processing system built with L
 - **Database:** Supabase PostgreSQL
 - **Frontend:** Open `frontend/index.html` locally in any browser to interact with the deployed API.
 
+## Approval Requirements
+
+For a claim to be Automatically Approved (without being flagged for Manual Review), it must pass several strict thresholds defined in your system:
+
+1. AI Extraction Confidence (>= 80%)
+In decision_maker.py, the system calculates the average confidence score across all extracted document fields. If this average is below 0.80, the claim is automatically flagged for Manual Review due to "Low AI Extraction Confidence."
+
+2. Claim Amount (<= ₹25,000)
+As per your policy_terms.json, there is an absolute ceiling for automation. Any claim with a total amount above ₹25,000 is automatically routed to Manual Review, even if the AI is 100% confident.
+
+3. Fraud Score (< 0.80)
+The Fraud Detector aggregates multiple signals (same-day claims, high-frequency monthly claims, etc.). If the resulting fraud score is 0.80 or higher, the claim is flagged for Manual Review.
+
+Note: Specific breaches, like exceeding the same-day claim limit (2 per day), trigger an immediate Manual Review regardless of the final score.
+4. Document Verification (Pass/Fail)
+The system requires a 100% match on document types. If you select "Hospital Bill" but the Vision LLM detects a "Prescription" or "Unknown" document, the claim fails verification immediately and is usually rejected or stopped early.
+
+5. Policy Compliance
+There is no "threshold" here—it is binary. If the system detects a hard policy violation (e.g., the member is not found in the roster, or the treatment is explicitly excluded like Cosmetic Surgery), the claim is Rejected.
+
+
+
+## Conditions for Automatic Approval:
+
+- **Confidence:** > 80%
+- **Fraud Score:** < 0.80
+- **Amount:** < ₹25,000
+- **Documents:** Verified Match
+- **Policy:** 100% Compliant
+
 ---
 
 ## How I Met the Assignment Criteria
